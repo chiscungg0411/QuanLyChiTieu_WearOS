@@ -487,6 +487,16 @@ class ChiTieuTheoMucScreen extends StatefulWidget {
   State<ChiTieuTheoMucScreen> createState() => _ChiTieuTheoMucScreenState();
 }
 
+class _ListRow {
+  final String? header;
+  final ChiTieuItem? item;
+
+  _ListRow.header(this.header) : item = null;
+  _ListRow.item(this.item) : header = null;
+
+  bool get isHeader => header != null;
+}
+
 class _ChiTieuTheoMucScreenState extends State<ChiTieuTheoMucScreen> {
   late List<ChiTieuItem> danhSachChi;
   bool dangChonXoa = false;
@@ -497,6 +507,32 @@ class _ChiTieuTheoMucScreenState extends State<ChiTieuTheoMucScreen> {
   void initState() {
     super.initState();
     danhSachChi = List<ChiTieuItem>.from(widget.danhSachChiBanDau);
+  }
+
+  List<_ListRow> _nhomTheoNgay(List<ChiTieuItem> items) {
+    final sorted = List<ChiTieuItem>.from(items);
+    sorted.sort((a, b) => b.thoiGian.compareTo(a.thoiGian));
+    final List<_ListRow> rows = [];
+    DateTime? previousDay;
+
+    for (final item in sorted) {
+      final currentDay = DateTime(
+        item.thoiGian.year,
+        item.thoiGian.month,
+        item.thoiGian.day,
+      );
+
+      if (previousDay == null ||
+          currentDay.millisecondsSinceEpoch !=
+              previousDay.millisecondsSinceEpoch) {
+        rows.add(_ListRow.header(dinhDangNgayRutGon(item.thoiGian)));
+        previousDay = currentDay;
+      }
+
+      rows.add(_ListRow.item(item));
+    }
+
+    return rows;
   }
 
   Future<void> themChiTieu() async {
@@ -567,6 +603,8 @@ class _ChiTieuTheoMucScreenState extends State<ChiTieuTheoMucScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final rows = _nhomTheoNgay(danhSachChi);
+
     return WillPopScope(
       onWillPop: () async {
         if (dangChonXoa) {
@@ -648,19 +686,35 @@ class _ChiTieuTheoMucScreenState extends State<ChiTieuTheoMucScreen> {
                         child: ListView.builder(
                           padding: EdgeInsets.symmetric(
                               horizontal: edge, vertical: 6),
-                          itemCount: danhSachChi.length,
+                          itemCount: rows.length,
                           itemBuilder: (context, index) {
-                            final item = danhSachChi[index];
-                            final timeText =
-                                '${dinhDangGio(item.thoiGian)}·${dinhDangNgayRutGon(item.thoiGian)}';
+                            final row = rows[index];
+                            if (row.isHeader) {
+                              return Padding(
+                                padding:
+                                    const EdgeInsets.symmetric(vertical: 8),
+                                child: Text(
+                                  row.header!,
+                                  style: const TextStyle(
+                                    color: Colors.white70,
+                                    fontSize: 12,
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                                ),
+                              );
+                            }
+
+                            final item = row.item!;
+                            final timeText = dinhDangGio(item.thoiGian);
                             final moneyText = '${dinhDangSo(item.soTien)} đ';
+                            final originalIndex = danhSachChi.indexOf(item);
 
                             return GestureDetector(
                               onTap: () {
                                 if (dangChonXoa) {
-                                  xacNhanXoa(index);
+                                  xacNhanXoa(originalIndex);
                                 } else {
-                                  chinhSuaChiTieu(index);
+                                  chinhSuaChiTieu(originalIndex);
                                 }
                               },
                               child: Container(
@@ -692,7 +746,7 @@ class _ChiTieuTheoMucScreenState extends State<ChiTieuTheoMucScreen> {
                                           timeText,
                                           style: const TextStyle(
                                             color: Colors.white54,
-                                            fontSize: 10,
+                                            fontSize: 12,
                                           ),
                                           maxLines: 1,
                                         ),
