@@ -148,7 +148,7 @@ extension ChiTieuMucX on ChiTieuMuc {
       case ChiTieuMuc.muaSam:
         return Icons.shopping_bag_rounded;
       case ChiTieuMuc.suaXe:
-        return Icons.build_circle_rounded;
+        return Icons.build_rounded;
       case ChiTieuMuc.lichSu:
         return Icons.history_rounded;
     }
