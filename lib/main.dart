@@ -1,6 +1,8 @@
 import 'dart:async';
+import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 void main() {
   runApp(
@@ -50,6 +52,7 @@ class ClockText extends StatefulWidget {
 class _ClockTextState extends State<ClockText> {
   late Timer _timer;
   DateTime _now = DateTime.now();
+  int _lastMinute = -1;
 
   String _two(int n) => n.toString().padLeft(2, '0');
 
@@ -64,8 +67,16 @@ class _ClockTextState extends State<ClockText> {
   @override
   void initState() {
     super.initState();
-    _timer = Timer.periodic(const Duration(seconds: 1), (_) {
-      if (mounted) setState(() => _now = DateTime.now());
+    _lastMinute = _now.minute;
+    // Update every minute if not showing seconds, every second otherwise
+    final interval = widget.showSeconds ? const Duration(seconds: 1) : const Duration(seconds: 10);
+    _timer = Timer.periodic(interval, (_) {
+      final now = DateTime.now();
+      // Only rebuild if minute changed (or second changed when showing seconds)
+      if (widget.showSeconds || now.minute != _lastMinute) {
+        _lastMinute = now.minute;
+        if (mounted) setState(() => _now = now);
+      }
     });
   }
 
@@ -107,6 +118,16 @@ class ChiTieuItem {
       thoiGian: thoiGian ?? this.thoiGian,
     );
   }
+
+  Map<String, dynamic> toJson() => {
+    'soTien': soTien,
+    'thoiGian': thoiGian.toIso8601String(),
+  };
+
+  factory ChiTieuItem.fromJson(Map<String, dynamic> json) => ChiTieuItem(
+    soTien: json['soTien'] as int,
+    thoiGian: DateTime.parse(json['thoiGian'] as String),
+  );
 }
 
 // =================== CATEGORY ===================
@@ -202,6 +223,9 @@ class _ChiTieuAppState extends State<ChiTieuApp> {
 
   final Map<String, Map<String, List<HistoryEntry>>> _lichSuThang = {};
 
+  static const String _keyChiTheoMuc = 'chi_theo_muc';
+  static const String _keyLichSuThang = 'lich_su_thang';
+
   static DateTime _asDate(DateTime dt) => DateTime(dt.year, dt.month, dt.day);
 
   bool _sameDay(DateTime a, DateTime b) =>
@@ -210,7 +234,82 @@ class _ChiTieuAppState extends State<ChiTieuApp> {
   @override
   void initState() {
     super.initState();
+    _loadData();
     Timer.periodic(const Duration(minutes: 1), (_) => _checkNewDay());
+  }
+
+  // Load data from SharedPreferences
+  Future<void> _loadData() async {
+    final prefs = await SharedPreferences.getInstance();
+    
+    // Load _chiTheoMuc
+    final chiTheoMucJson = prefs.getString(_keyChiTheoMuc);
+    if (chiTheoMucJson != null) {
+      try {
+        final Map<String, dynamic> decoded = jsonDecode(chiTheoMucJson);
+        for (final muc in ChiTieuMuc.values) {
+          if (muc == ChiTieuMuc.lichSu) continue;
+          final mucName = muc.name;
+          if (decoded.containsKey(mucName)) {
+            final List<dynamic> items = decoded[mucName];
+            _chiTheoMuc[muc] = items
+                .map((e) => ChiTieuItem.fromJson(e as Map<String, dynamic>))
+                .toList();
+          }
+        }
+      } catch (_) {}
+    }
+    
+    // Load _lichSuThang
+    final lichSuThangJson = prefs.getString(_keyLichSuThang);
+    if (lichSuThangJson != null) {
+      try {
+        final Map<String, dynamic> decoded = jsonDecode(lichSuThangJson);
+        for (final monthKey in decoded.keys) {
+          final Map<String, dynamic> daysData = decoded[monthKey];
+          _lichSuThang[monthKey] = {};
+          for (final dayKey in daysData.keys) {
+            final List<dynamic> entries = daysData[dayKey];
+            _lichSuThang[monthKey]![dayKey] = entries.map((e) {
+              final mucName = e['muc'] as String;
+              final muc = ChiTieuMuc.values.firstWhere((m) => m.name == mucName);
+              final item = ChiTieuItem.fromJson(e['item'] as Map<String, dynamic>);
+              return HistoryEntry(muc: muc, item: item);
+            }).toList();
+          }
+        }
+      } catch (_) {}
+    }
+    
+    if (mounted) {
+      setState(() {});
+    }
+  }
+
+  // Save data to SharedPreferences
+  Future<void> _saveData() async {
+    final prefs = await SharedPreferences.getInstance();
+    
+    // Save _chiTheoMuc
+    final Map<String, dynamic> chiTheoMucData = {};
+    for (final muc in ChiTieuMuc.values) {
+      if (muc == ChiTieuMuc.lichSu) continue;
+      chiTheoMucData[muc.name] = _chiTheoMuc[muc]!.map((e) => e.toJson()).toList();
+    }
+    await prefs.setString(_keyChiTheoMuc, jsonEncode(chiTheoMucData));
+    
+    // Save _lichSuThang
+    final Map<String, dynamic> lichSuThangData = {};
+    for (final monthKey in _lichSuThang.keys) {
+      lichSuThangData[monthKey] = {};
+      for (final dayKey in _lichSuThang[monthKey]!.keys) {
+        lichSuThangData[monthKey][dayKey] = _lichSuThang[monthKey]![dayKey]!.map((e) => {
+          'muc': e.muc.name,
+          'item': e.item.toJson(),
+        }).toList();
+      }
+    }
+    await prefs.setString(_keyLichSuThang, jsonEncode(lichSuThangData));
   }
 
   void _checkNewDay() {
@@ -221,6 +320,7 @@ class _ChiTieuAppState extends State<ChiTieuApp> {
           _luuLichSuNgayHomQua();
           _currentDay = _asDate(now);
         });
+        _saveData();
       }
     }
   }
@@ -273,6 +373,7 @@ class _ChiTieuAppState extends State<ChiTieuApp> {
     _lichSuThang.putIfAbsent(monthKey, () => {});
     _lichSuThang[monthKey]![dayKey] = allCurrentDayEntries;
     setState(() {});
+    _saveData();
   }
 
   int _tongMuc(ChiTieuMuc muc) {
@@ -443,68 +544,20 @@ class _ScalingGridState extends State<_ScalingGrid> {
   Widget build(BuildContext context) {
     return LayoutBuilder(
       builder: (context, constraints) {
-        final gridWidth = constraints.maxWidth - widget.edge * 2;
-        final itemWidth = (gridWidth - _crossSpacing * (_crossAxisCount - 1)) /
-            _crossAxisCount;
-        final itemHeight = itemWidth / _childAspectRatio;
-        final rowExtent = itemHeight + _mainSpacing;
-        final viewportHeight = constraints.maxHeight;
-
-        final edgeZone = (viewportHeight * 0.30).clamp(50.0, 120.0);
-
-        const maxShrink = 0.18;
-        const maxFade = 0.35;
-
-        return AnimatedBuilder(
-          animation: _controller,
-          builder: (context, _) {
-            final scrollOffset =
-                _controller.hasClients ? _controller.offset : 0.0;
-
-            return GridView.builder(
-              controller: _controller,
-              padding:
-                  EdgeInsets.fromLTRB(widget.edge, 0, widget.edge, widget.edge),
-              physics: const BouncingScrollPhysics(
-                parent: AlwaysScrollableScrollPhysics(),
-              ),
-              gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-                crossAxisCount: _crossAxisCount,
-                mainAxisSpacing: _mainSpacing,
-                crossAxisSpacing: _crossSpacing,
-                childAspectRatio: _childAspectRatio,
-              ),
-              itemCount: widget.itemCount,
-              itemBuilder: (context, index) {
-                final row = index ~/ _crossAxisCount;
-                final itemTop = row * rowExtent;
-                final itemCenterY = itemTop + itemHeight / 2;
-
-                final centerRel = itemCenterY - scrollOffset;
-
-                double scale = 1.0;
-                double opacity = 1.0;
-
-                if (centerRel < edgeZone) {
-                  final t = (1 - (centerRel / edgeZone)).clamp(0.0, 1.0);
-                  scale = 1.0 - maxShrink * t;
-                  opacity = 1.0 - maxFade * t;
-                } else if (centerRel > viewportHeight - edgeZone) {
-                  final distToBottom = viewportHeight - centerRel;
-                  final t = (1 - (distToBottom / edgeZone)).clamp(0.0, 1.0);
-                  scale = 1.0 - maxShrink * t;
-                  opacity = 1.0 - maxFade * t;
-                }
-
-                return Transform.scale(
-                  scale: scale,
-                  alignment: Alignment.center,
-                  child: Opacity(
-                    opacity: opacity,
-                    child: widget.itemBuilder(context, index),
-                  ),
-                );
-              },
+        return GridView.builder(
+          controller: _controller,
+          padding: EdgeInsets.fromLTRB(widget.edge, 0, widget.edge, widget.edge),
+          physics: const ClampingScrollPhysics(),
+          gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+            crossAxisCount: _crossAxisCount,
+            mainAxisSpacing: _mainSpacing,
+            crossAxisSpacing: _crossSpacing,
+            childAspectRatio: _childAspectRatio,
+          ),
+          itemCount: widget.itemCount,
+          itemBuilder: (context, index) {
+            return RepaintBoundary(
+              child: widget.itemBuilder(context, index),
             );
           },
         );
@@ -530,51 +583,38 @@ class _CategoryButton extends StatelessWidget {
   Widget build(BuildContext context) {
     final bool coTien = tongTien > 0;
 
-    return Material(
-      color: Colors.transparent,
-      child: InkWell(
-        borderRadius: BorderRadius.circular(18),
-        onTap: onTap,
-        child: Ink(
-          decoration: BoxDecoration(
-            color: const Color(0xFF1B1B1B),
-            borderRadius: BorderRadius.circular(18),
-            boxShadow: [
-              BoxShadow(
-                color: Colors.black.withOpacity(0.25),
-                blurRadius: 8,
-                offset: const Offset(0, 4),
-              ),
-            ],
-          ),
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              Icon(
-                icon,
-                color: const Color(0xFFFFFFFF),
-                size: coTien ? 24 : 28,
-              ),
-              if (coTien) ...[
-                const SizedBox(height: 4),
-                Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 4),
-                  child: FittedBox(
-                    fit: BoxFit.scaleDown,
-                    child: Text(
-                      '${dinhDangSo(tongTien)} đ',
-                      style: const TextStyle(
-                        color: Color(0xFFF08080),
-                        fontSize: 10,
-                        fontWeight: FontWeight.w600,
-                      ),
-                      maxLines: 1,
-                    ),
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        decoration: BoxDecoration(
+          color: const Color(0xFF1B1B1B),
+          borderRadius: BorderRadius.circular(18),
+        ),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(
+              icon,
+              color: const Color(0xFFFFFFFF),
+              size: coTien ? 24 : 28,
+            ),
+            if (coTien) ...[
+              const SizedBox(height: 4),
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 4),
+                child: Text(
+                  '${dinhDangSo(tongTien)} đ',
+                  style: const TextStyle(
+                    color: Color(0xFFF08080),
+                    fontSize: 10,
+                    fontWeight: FontWeight.w600,
                   ),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
                 ),
-              ],
+              ),
             ],
-          ),
+          ],
         ),
       ),
     );
