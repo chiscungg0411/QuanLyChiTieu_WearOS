@@ -194,13 +194,18 @@ class ChiTieuApp extends StatefulWidget {
 }
 
 class _ChiTieuAppState extends State<ChiTieuApp> {
-  DateTime _currentDay = DateTime.now();
+  DateTime _currentDay = _asDate(DateTime.now());
+
   final Map<ChiTieuMuc, List<ChiTieuItem>> _chiTheoMuc = {
     for (final muc in ChiTieuMuc.values) muc: <ChiTieuItem>[],
   };
 
-  // Lưu lịch sử: tháng -> ngày -> danh sách HistoryEntry
   final Map<String, Map<String, List<HistoryEntry>>> _lichSuThang = {};
+
+  static DateTime _asDate(DateTime dt) => DateTime(dt.year, dt.month, dt.day);
+
+  bool _sameDay(DateTime a, DateTime b) =>
+      a.year == b.year && a.month == b.month && a.day == b.day;
 
   @override
   void initState() {
@@ -210,13 +215,11 @@ class _ChiTieuAppState extends State<ChiTieuApp> {
 
   void _checkNewDay() {
     final now = DateTime.now();
-    if (now.day != _currentDay.day ||
-        now.month != _currentDay.month ||
-        now.year != _currentDay.year) {
+    if (!_sameDay(now, _currentDay)) {
       if (mounted) {
         setState(() {
           _luuLichSuNgayHomQua();
-          _currentDay = DateTime(now.year, now.month, now.day);
+          _currentDay = _asDate(now);
         });
       }
     }
@@ -232,9 +235,7 @@ class _ChiTieuAppState extends State<ChiTieuApp> {
     _chiTheoMuc.forEach((muc, items) {
       if (muc == ChiTieuMuc.lichSu) return;
       final itemsNgayHomQua = items.where((item) =>
-          item.thoiGian.day == ngayHomQua.day &&
-          item.thoiGian.month == ngayHomQua.month &&
-          item.thoiGian.year == ngayHomQua.year).toList();
+          _sameDay(item.thoiGian, ngayHomQua)).toList();
       for (final it in itemsNgayHomQua) {
         entries.add(HistoryEntry(muc: muc, item: it));
       }
@@ -244,14 +245,10 @@ class _ChiTieuAppState extends State<ChiTieuApp> {
       _lichSuThang.putIfAbsent(monthKey, () => {});
       _lichSuThang[monthKey]![dayKey] = entries;
 
-      // Xóa các khoản chi của ngày hôm qua khỏi dữ liệu hiện tại
       for (final muc in ChiTieuMuc.values) {
         if (muc == ChiTieuMuc.lichSu) continue;
         _chiTheoMuc[muc] = _chiTheoMuc[muc]!
-            .where((item) =>
-                !(item.thoiGian.day == ngayHomQua.day &&
-                  item.thoiGian.month == ngayHomQua.month &&
-                  item.thoiGian.year == ngayHomQua.year))
+            .where((item) => !_sameDay(item.thoiGian, ngayHomQua))
             .toList();
       }
     }
@@ -260,20 +257,15 @@ class _ChiTieuAppState extends State<ChiTieuApp> {
   // Cập nhật lịch sử ngay khi thêm/sửa/xóa trong ngày hiện tại
   void _capNhatLichSuSauThayDoi(ChiTieuMuc muc, List<ChiTieuItem> danhSachMoi) {
     _chiTheoMuc[muc] = danhSachMoi.where((item) =>
-        item.thoiGian.day == _currentDay.day &&
-        item.thoiGian.month == _currentDay.month &&
-        item.thoiGian.year == _currentDay.year).toList();
+        _sameDay(item.thoiGian, _currentDay)).toList();
 
-    final monthKey = getMonthKey(DateTime.now());
-    final dayKey = dinhDangNgayDayDu(DateTime.now());
+    final monthKey = getMonthKey(_currentDay);
+    final dayKey = dinhDangNgayDayDu(_currentDay);
 
     final List<HistoryEntry> allCurrentDayEntries = [];
     _chiTheoMuc.forEach((mucKey, items) {
       if (mucKey == ChiTieuMuc.lichSu) return;
-      for (final it in items.where((item) =>
-          item.thoiGian.day == _currentDay.day &&
-          item.thoiGian.month == _currentDay.month &&
-          item.thoiGian.year == _currentDay.year)) {
+      for (final it in items.where((item) => _sameDay(item.thoiGian, _currentDay))) {
         allCurrentDayEntries.add(HistoryEntry(muc: mucKey, item: it));
       }
     });
@@ -295,11 +287,7 @@ class _ChiTieuAppState extends State<ChiTieuApp> {
         if (entry.key == ChiTieuMuc.lichSu) return sum;
         return sum + entry.value.fold<int>(
           0,
-          (a, b) => (b.thoiGian.day == _currentDay.day &&
-                     b.thoiGian.month == _currentDay.month &&
-                     b.thoiGian.year == _currentDay.year)
-                 ? a + b.soTien
-                 : a,
+          (a, b) => _sameDay(b.thoiGian, _currentDay) ? a + b.soTien : a,
         );
       },
     );
@@ -320,10 +308,9 @@ class _ChiTieuAppState extends State<ChiTieuApp> {
       return;
     }
 
-    final danhSachChiHienTai = (_chiTheoMuc[muc] ?? []).where((item) =>
-        item.thoiGian.day == _currentDay.day &&
-        item.thoiGian.month == _currentDay.month &&
-        item.thoiGian.year == _currentDay.year).toList();
+    final danhSachChiHienTai = (_chiTheoMuc[muc] ?? [])
+        .where((item) => _sameDay(item.thoiGian, _currentDay))
+        .toList();
 
     final updated = await Navigator.push<List<ChiTieuItem>>(
       context,
@@ -613,13 +600,15 @@ class LichSuScreen extends StatefulWidget {
 }
 
 class _LichSuScreenState extends State<LichSuScreen> {
-  final Set<String> _expandedDayKeys = {}; // monthKey|dayKey
+  final Set<String> _expandedDayKeys = {};
+
+  bool _sameDay(DateTime a, DateTime b) =>
+      a.year == b.year && a.month == b.month && a.day == b.day;
 
   @override
   Widget build(BuildContext context) {
     final edge = (MediaQuery.of(context).size.width * 0.10).clamp(16.0, 36.0);
 
-    // Kết hợp lịch sử đã lưu + dữ liệu ngày hiện tại
     final Map<String, Map<String, List<HistoryEntry>>> combined = {
       for (final e in widget.lichSuThang.entries)
         e.key: {
@@ -627,16 +616,12 @@ class _LichSuScreenState extends State<LichSuScreen> {
         }
     };
 
-    // Thêm dữ liệu ngày hiện tại (nếu có)
     final monthKeyNow = getMonthKey(widget.currentDay);
     final dayKeyNow = dinhDangNgayDayDu(widget.currentDay);
     final List<HistoryEntry> currentDayEntries = [];
     widget.currentData.forEach((muc, items) {
       if (muc == ChiTieuMuc.lichSu) return;
-      for (final it in items.where((item) =>
-          item.thoiGian.day == widget.currentDay.day &&
-          item.thoiGian.month == widget.currentDay.month &&
-          item.thoiGian.year == widget.currentDay.year)) {
+      for (final it in items.where((item) => _sameDay(item.thoiGian, widget.currentDay))) {
         currentDayEntries.add(HistoryEntry(muc: muc, item: it));
       }
     });
@@ -646,7 +631,6 @@ class _LichSuScreenState extends State<LichSuScreen> {
       combined[monthKeyNow]![dayKeyNow] = currentDayEntries;
     }
 
-    // Sắp xếp tháng
     final sortedMonths = combined.keys.toList()
       ..sort((a, b) {
         final pa = a.split('/');
@@ -710,12 +694,10 @@ class _LichSuScreenState extends State<LichSuScreen> {
                             final monthKey = sortedMonths[monthIndex];
                             final daysData = combined[monthKey]!;
 
-                            // Tổng tiền tháng
                             final totalMonth = daysData.values
                                 .expand((lst) => lst)
                                 .fold(0, (s, e) => s + e.item.soTien);
 
-                            // Sắp xếp ngày
                             final sortedDays = daysData.keys.toList()
                               ..sort((a, b) {
                                 final pa = a.split('/');
@@ -734,7 +716,6 @@ class _LichSuScreenState extends State<LichSuScreen> {
                               child: Column(
                                 crossAxisAlignment: CrossAxisAlignment.start,
                                 children: [
-                                  // Header tháng
                                   Container(
                                     padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
                                     decoration: BoxDecoration(
@@ -768,7 +749,6 @@ class _LichSuScreenState extends State<LichSuScreen> {
                                       ],
                                     ),
                                   ),
-                                  // Danh sách ngày (accordion)
                                   ListView.builder(
                                     shrinkWrap: true,
                                     physics: const NeverScrollableScrollPhysics(),
@@ -779,7 +759,6 @@ class _LichSuScreenState extends State<LichSuScreen> {
                                       final dayToggleKey = '$monthKey|$dayKey';
                                       final expanded = _expandedDayKeys.contains(dayToggleKey);
 
-                                      // Nhóm theo danh mục
                                       final Map<ChiTieuMuc, List<HistoryEntry>> groupByCategory = {};
                                       for (final entry in itemsOnDay) {
                                         groupByCategory.putIfAbsent(entry.muc, () => []);
@@ -791,7 +770,6 @@ class _LichSuScreenState extends State<LichSuScreen> {
                                         child: Column(
                                           crossAxisAlignment: CrossAxisAlignment.start,
                                           children: [
-                                            // Header ngày (tappable)
                                             InkWell(
                                               onTap: () {
                                                 setState(() {
@@ -829,7 +807,6 @@ class _LichSuScreenState extends State<LichSuScreen> {
                                             ),
                                             if (expanded) ...[
                                               const SizedBox(height: 4),
-                                              // Mỗi nhóm danh mục
                                               ...groupByCategory.entries.map((catEntry) {
                                                 final muc = catEntry.key;
                                                 final entries = List<HistoryEntry>.from(catEntry.value)
@@ -845,7 +822,6 @@ class _LichSuScreenState extends State<LichSuScreen> {
                                                         children: [
                                                           Icon(muc.icon, size: 16, color: Colors.white70),
                                                           const SizedBox(width: 6),
-                                                          // Chỉ icon + tổng tiền nhóm
                                                           Text(
                                                             '${dinhDangSo(totalCat)} đ',
                                                             style: const TextStyle(
@@ -857,7 +833,6 @@ class _LichSuScreenState extends State<LichSuScreen> {
                                                         ],
                                                       ),
                                                       const SizedBox(height: 4),
-                                                      // Các khoản chi trong nhóm (theo giờ, số tiền)
                                                       ...entries.map((entry) {
                                                         final timeText = dinhDangGio(entry.item.thoiGian);
                                                         final moneyText = '${dinhDangSo(entry.item.soTien)} đ';
@@ -914,7 +889,7 @@ class _LichSuScreenState extends State<LichSuScreen> {
 
 class ChiTieuTheoMucScreen extends StatefulWidget {
   final ChiTieuMuc muc;
-  final List<ChiTieuItem> danhSachChiBanDau; // chỉ khoản chi ngày hiện tại
+  final List<ChiTieuItem> danhSachChiBanDau;
   final DateTime currentDay;
   final Function(List<ChiTieuItem>)? onDataChanged;
 
@@ -970,8 +945,8 @@ class _ChiTieuTheoMucScreenState extends State<ChiTieuTheoMucScreen> {
       ..sort((a, b) {
         final pa = a.split('/');
         final pb = b.split('/');
-        final da = DateTime(int.parse(pa[1]), int.parse(pa[0]));
-        final db = DateTime(int.parse(pb[1]), int.parse(pb[0]));
+        final da = DateTime(int.parse(pa[2]), int.parse(pa[1]), int.parse(pa[0]));
+        final db = DateTime(int.parse(pb[2]), int.parse(pb[1]), int.parse(pb[0]));
         return db.compareTo(da);
       });
 
@@ -993,7 +968,9 @@ class _ChiTieuTheoMucScreenState extends State<ChiTieuTheoMucScreen> {
 
     if (soTien != null && soTien > 0) {
       setState(() {
-        danhSachChi.add(ChiTieuItem(soTien: soTien, thoiGian: DateTime.now()));
+        danhSachChi.add(
+          ChiTieuItem(soTien: soTien, thoiGian: DateTime.now()),
+        );
         widget.onDataChanged?.call(danhSachChi);
       });
     }
@@ -1004,7 +981,9 @@ class _ChiTieuTheoMucScreenState extends State<ChiTieuTheoMucScreen> {
     final soTienMoi = await Navigator.push<int>(
       context,
       MaterialPageRoute(
-        builder: (_) => NhapSoTienScreen(soTienBanDau: danhSachChi[index].soTien),
+        builder: (_) => NhapSoTienScreen(
+          soTienBanDau: danhSachChi[index].soTien,
+        ),
       ),
     );
 
@@ -1134,7 +1113,6 @@ class _ChiTieuTheoMucScreenState extends State<ChiTieuTheoMucScreen> {
                         ),
                       ),
                       const SizedBox(height: 4),
-
                       Expanded(
                         child: ListView.builder(
                           padding: EdgeInsets.symmetric(
@@ -1261,7 +1239,6 @@ class _ChiTieuTheoMucScreenState extends State<ChiTieuTheoMucScreen> {
                           },
                         ),
                       ),
-
                       Padding(
                         padding: const EdgeInsets.only(bottom: 16, top: 8),
                         child: Row(
