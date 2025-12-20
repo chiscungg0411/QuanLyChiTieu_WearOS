@@ -8,7 +8,7 @@ void main() {
   runApp(
     MaterialApp(
       debugShowCheckedModeBanner: false,
-      title: 'VCC Finance',
+      title: 'CFinance',
       theme: ThemeData(
         brightness: Brightness.dark,
         scaffoldBackgroundColor: Colors.black,
@@ -116,33 +116,38 @@ class _ClockTextState extends State<ClockText> {
 class ChiTieuItem {
   final int soTien;
   final DateTime thoiGian;
+  final String? tenChiTieu; // Optional expense name for khac category
 
   ChiTieuItem({
     required this.soTien,
     required this.thoiGian,
+    this.tenChiTieu,
   });
 
-  ChiTieuItem copyWith({int? soTien, DateTime? thoiGian}) {
+  ChiTieuItem copyWith({int? soTien, DateTime? thoiGian, String? tenChiTieu}) {
     return ChiTieuItem(
       soTien: soTien ?? this.soTien,
       thoiGian: thoiGian ?? this.thoiGian,
+      tenChiTieu: tenChiTieu ?? this.tenChiTieu,
     );
   }
 
   Map<String, dynamic> toJson() => {
     'soTien': soTien,
     'thoiGian': thoiGian.toIso8601String(),
+    if (tenChiTieu != null) 'tenChiTieu': tenChiTieu,
   };
 
   factory ChiTieuItem.fromJson(Map<String, dynamic> json) => ChiTieuItem(
     soTien: json['soTien'] as int,
     thoiGian: DateTime.parse(json['thoiGian'] as String),
+    tenChiTieu: json['tenChiTieu'] as String?,
   );
 }
 
 // =================== CATEGORY ===================
 
-enum ChiTieuMuc { nhaTro, hocPhi, thucAn, doUong, xang, muaSam, suaXe, lichSu }
+enum ChiTieuMuc { nhaTro, hocPhi, thucAn, doUong, xang, muaSam, suaXe, khac, lichSu, caiDat }
 
 extension ChiTieuMucX on ChiTieuMuc {
   String get ten {
@@ -161,8 +166,12 @@ extension ChiTieuMucX on ChiTieuMuc {
         return 'Mua sắm';
       case ChiTieuMuc.suaXe:
         return 'Sửa xe';
+      case ChiTieuMuc.khac:
+        return 'Khác';
       case ChiTieuMuc.lichSu:
         return 'Lịch sử';
+      case ChiTieuMuc.caiDat:
+        return 'Cài đặt';
     }
   }
 
@@ -182,8 +191,12 @@ extension ChiTieuMucX on ChiTieuMuc {
         return Icons.shopping_bag_rounded;
       case ChiTieuMuc.suaXe:
         return Icons.build_rounded;
+      case ChiTieuMuc.khac:
+        return Icons.more_horiz_rounded;
       case ChiTieuMuc.lichSu:
         return Icons.history_rounded;
+      case ChiTieuMuc.caiDat:
+        return Icons.settings_rounded;
     }
   }
 }
@@ -258,7 +271,7 @@ class _ChiTieuAppState extends State<ChiTieuApp> {
       try {
         final Map<String, dynamic> decoded = jsonDecode(chiTheoMucJson);
         for (final muc in ChiTieuMuc.values) {
-          if (muc == ChiTieuMuc.lichSu) continue;
+          if (muc == ChiTieuMuc.lichSu || muc == ChiTieuMuc.caiDat) continue;
           final mucName = muc.name;
           if (decoded.containsKey(mucName)) {
             final List<dynamic> items = decoded[mucName];
@@ -303,7 +316,7 @@ class _ChiTieuAppState extends State<ChiTieuApp> {
     // Save _chiTheoMuc
     final Map<String, dynamic> chiTheoMucData = {};
     for (final muc in ChiTieuMuc.values) {
-      if (muc == ChiTieuMuc.lichSu) continue;
+      if (muc == ChiTieuMuc.lichSu || muc == ChiTieuMuc.caiDat) continue;
       chiTheoMucData[muc.name] = _chiTheoMuc[muc]!.map((e) => e.toJson()).toList();
     }
     await prefs.setString(_keyChiTheoMuc, jsonEncode(chiTheoMucData));
@@ -343,7 +356,7 @@ class _ChiTieuAppState extends State<ChiTieuApp> {
 
     final List<HistoryEntry> entries = [];
     _chiTheoMuc.forEach((muc, items) {
-      if (muc == ChiTieuMuc.lichSu) return;
+      if (muc == ChiTieuMuc.lichSu || muc == ChiTieuMuc.caiDat) return;
       final itemsNgayHomQua = items.where((item) =>
           _sameDay(item.thoiGian, ngayHomQua)).toList();
       for (final it in itemsNgayHomQua) {
@@ -356,7 +369,7 @@ class _ChiTieuAppState extends State<ChiTieuApp> {
       _lichSuThang[monthKey]![dayKey] = entries;
 
       for (final muc in ChiTieuMuc.values) {
-        if (muc == ChiTieuMuc.lichSu) continue;
+        if (muc == ChiTieuMuc.lichSu || muc == ChiTieuMuc.caiDat) continue;
         _chiTheoMuc[muc] = _chiTheoMuc[muc]!
             .where((item) => !_sameDay(item.thoiGian, ngayHomQua))
             .toList();
@@ -374,7 +387,7 @@ class _ChiTieuAppState extends State<ChiTieuApp> {
 
     final List<HistoryEntry> allCurrentDayEntries = [];
     _chiTheoMuc.forEach((mucKey, items) {
-      if (mucKey == ChiTieuMuc.lichSu) return;
+      if (mucKey == ChiTieuMuc.lichSu || mucKey == ChiTieuMuc.caiDat) return;
       for (final it in items.where((item) => _sameDay(item.thoiGian, _currentDay))) {
         allCurrentDayEntries.add(HistoryEntry(muc: mucKey, item: it));
       }
@@ -395,7 +408,7 @@ class _ChiTieuAppState extends State<ChiTieuApp> {
     return _chiTheoMuc.entries.fold<int>(
       0,
       (sum, entry) {
-        if (entry.key == ChiTieuMuc.lichSu) return sum;
+        if (entry.key == ChiTieuMuc.lichSu || entry.key == ChiTieuMuc.caiDat) return sum;
         return sum + entry.value.fold<int>(
           0,
           (a, b) => _sameDay(b.thoiGian, _currentDay) ? a + b.soTien : a,
@@ -416,6 +429,38 @@ class _ChiTieuAppState extends State<ChiTieuApp> {
           ),
         ),
       );
+      return;
+    }
+
+    if (muc == ChiTieuMuc.caiDat) {
+      await Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (_) => const SettingsScreen(),
+        ),
+      );
+      return;
+    }
+
+    if (muc == ChiTieuMuc.khac) {
+      final danhSachChiHienTai = (_chiTheoMuc[muc] ?? [])
+          .where((item) => _sameDay(item.thoiGian, _currentDay))
+          .toList();
+
+      final updated = await Navigator.push<List<ChiTieuItem>>(
+        context,
+        MaterialPageRoute(
+          builder: (_) => KhacTheoMucScreen(
+            danhSachChiBanDau: danhSachChiHienTai,
+            currentDay: _currentDay,
+            onDataChanged: (newList) => _capNhatLichSuSauThayDoi(muc, newList),
+          ),
+        ),
+      );
+
+      if (updated != null) {
+        _capNhatLichSuSauThayDoi(muc, updated);
+      }
       return;
     }
 
@@ -498,7 +543,7 @@ class _ChiTieuAppState extends State<ChiTieuApp> {
                         itemBuilder: (context, i) {
                           final muc = ChiTieuMuc.values[i];
                           final tongMuc =
-                              (muc == ChiTieuMuc.lichSu) ? 0 : _tongMuc(muc);
+                              (muc == ChiTieuMuc.lichSu || muc == ChiTieuMuc.caiDat) ? 0 : _tongMuc(muc);
 
                           return _CategoryButton(
                             icon: muc.icon,
@@ -886,27 +931,65 @@ class _LichSuScreenState extends State<LichSuScreen> {
                                                       ...entries.map((entry) {
                                                         final timeText = dinhDangGio(entry.item.thoiGian);
                                                         final moneyText = '${dinhDangSo(entry.item.soTien)} đ';
+                                                        final tenChiTieu = entry.item.tenChiTieu;
+                                                        final isKhac = entry.muc == ChiTieuMuc.khac && tenChiTieu != null;
+                                                        
                                                         return Padding(
                                                           padding: const EdgeInsets.symmetric(vertical: 2, horizontal: 12),
-                                                          child: Row(
-                                                            children: [
-                                                              Text(
-                                                                timeText,
-                                                                style: const TextStyle(
-                                                                  color: Colors.white54,
-                                                                  fontSize: 12,
+                                                          child: isKhac
+                                                              ? Column(
+                                                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                                                  children: [
+                                                                    Text(
+                                                                      tenChiTieu,
+                                                                      style: const TextStyle(
+                                                                        color: Colors.white70,
+                                                                        fontSize: 11,
+                                                                        fontWeight: FontWeight.w500,
+                                                                      ),
+                                                                      maxLines: 1,
+                                                                      overflow: TextOverflow.ellipsis,
+                                                                    ),
+                                                                    Row(
+                                                                      children: [
+                                                                        Text(
+                                                                          timeText,
+                                                                          style: const TextStyle(
+                                                                            color: Colors.white54,
+                                                                            fontSize: 10,
+                                                                          ),
+                                                                        ),
+                                                                        const Spacer(),
+                                                                        Text(
+                                                                          moneyText,
+                                                                          style: const TextStyle(
+                                                                            color: Colors.white,
+                                                                            fontSize: 12,
+                                                                          ),
+                                                                        ),
+                                                                      ],
+                                                                    ),
+                                                                  ],
+                                                                )
+                                                              : Row(
+                                                                  children: [
+                                                                    Text(
+                                                                      timeText,
+                                                                      style: const TextStyle(
+                                                                        color: Colors.white54,
+                                                                        fontSize: 12,
+                                                                      ),
+                                                                    ),
+                                                                    const Spacer(),
+                                                                    Text(
+                                                                      moneyText,
+                                                                      style: const TextStyle(
+                                                                        color: Colors.white,
+                                                                        fontSize: 12,
+                                                                      ),
+                                                                    ),
+                                                                  ],
                                                                 ),
-                                                              ),
-                                                              const Spacer(),
-                                                              Text(
-                                                                moneyText,
-                                                                style: const TextStyle(
-                                                                  color: Colors.white,
-                                                                  fontSize: 12,
-                                                                ),
-                                                              ),
-                                                            ],
-                                                          ),
                                                         );
                                                       }),
                                                     ],
@@ -1580,6 +1663,722 @@ class _NhapSoTienScreenState extends State<NhapSoTienScreen> {
       height: 48,
       decoration: BoxDecoration(color: color, shape: BoxShape.circle),
       child: Icon(icon, color: Colors.white, size: 24),
+    );
+  }
+}
+
+// =================== KHÁC DETAIL SCREEN ===================
+
+class KhacTheoMucScreen extends StatefulWidget {
+  final List<ChiTieuItem> danhSachChiBanDau;
+  final DateTime currentDay;
+  final Function(List<ChiTieuItem>)? onDataChanged;
+
+  const KhacTheoMucScreen({
+    super.key,
+    required this.danhSachChiBanDau,
+    required this.currentDay,
+    this.onDataChanged,
+  });
+
+  @override
+  State<KhacTheoMucScreen> createState() => _KhacTheoMucScreenState();
+}
+
+class _KhacTheoMucScreenState extends State<KhacTheoMucScreen> {
+  late List<ChiTieuItem> danhSachChi;
+  bool dangChonXoa = false;
+
+  int get tongChi => danhSachChi.fold(0, (a, b) => a + b.soTien);
+
+  @override
+  void initState() {
+    super.initState();
+    danhSachChi = List<ChiTieuItem>.from(widget.danhSachChiBanDau);
+  }
+
+  Future<void> themChiTieu() async {
+    final result = await Navigator.push<Map<String, dynamic>>(
+      context,
+      MaterialPageRoute(builder: (_) => const NhapChiTieuKhacScreen()),
+    );
+
+    if (result != null) {
+      setState(() {
+        danhSachChi.add(
+          ChiTieuItem(
+            soTien: result['soTien'] as int,
+            thoiGian: DateTime.now(),
+            tenChiTieu: result['tenChiTieu'] as String,
+          ),
+        );
+        widget.onDataChanged?.call(danhSachChi);
+      });
+    }
+  }
+
+  Future<void> chinhSuaChiTieu(int index) async {
+    if (dangChonXoa) return;
+    final item = danhSachChi[index];
+    final result = await Navigator.push<Map<String, dynamic>>(
+      context,
+      MaterialPageRoute(
+        builder: (_) => NhapChiTieuKhacScreen(
+          tenBanDau: item.tenChiTieu,
+          soTienBanDau: item.soTien,
+        ),
+      ),
+    );
+
+    if (result != null) {
+      setState(() {
+        danhSachChi[index] = ChiTieuItem(
+          soTien: result['soTien'] as int,
+          thoiGian: DateTime.now(),
+          tenChiTieu: result['tenChiTieu'] as String,
+        );
+        widget.onDataChanged?.call(danhSachChi);
+      });
+    }
+  }
+
+  void batDauChonXoa() {
+    if (danhSachChi.isEmpty) return;
+    setState(() {
+      dangChonXoa = true;
+    });
+  }
+
+  void huyChonXoa() {
+    setState(() {
+      dangChonXoa = false;
+    });
+  }
+
+  Future<void> xacNhanXoa(int index) async {
+    final item = danhSachChi[index];
+    final dongY = await Navigator.push<bool>(
+      context,
+      MaterialPageRoute(
+        builder: (_) => XacNhanXoaKhacScreen(
+          soTien: item.soTien,
+          tenChiTieu: item.tenChiTieu ?? 'Khác',
+        ),
+      ),
+    );
+
+    if (dongY == true) {
+      setState(() {
+        danhSachChi.removeAt(index);
+        if (danhSachChi.isEmpty) {
+          dangChonXoa = false;
+        }
+        widget.onDataChanged?.call(danhSachChi);
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return WillPopScope(
+      onWillPop: () async {
+        if (dangChonXoa) {
+          huyChonXoa();
+          return false;
+        }
+        widget.onDataChanged?.call(danhSachChi);
+        Navigator.pop(context, danhSachChi);
+        return false;
+      },
+      child: Scaffold(
+        backgroundColor: Colors.black,
+        body: SafeArea(
+          child: LayoutBuilder(
+            builder: (context, constraints) {
+              final edge =
+                  (constraints.maxWidth * 0.10).clamp(16.0, 36.0).toDouble();
+
+              return Stack(
+                children: [
+                  const _WatchBackground(),
+                  Positioned(
+                    top: 12,
+                    left: edge,
+                    child: IconButton(
+                      icon: const Icon(
+                        Icons.arrow_back_ios_new_rounded,
+                        color: Colors.white70,
+                        size: 16,
+                      ),
+                      onPressed: () {
+                        if (dangChonXoa) {
+                          huyChonXoa();
+                        } else {
+                          widget.onDataChanged?.call(danhSachChi);
+                          Navigator.pop(context, danhSachChi);
+                        }
+                      },
+                    ),
+                  ),
+                  Column(
+                    children: [
+                      const SizedBox(height: 4),
+                      const ClockText(),
+                      const SizedBox(height: 8),
+                      const Row(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          Icon(Icons.more_horiz_rounded, color: Colors.white, size: 18),
+                          SizedBox(width: 6),
+                          Text(
+                            'Khác',
+                            style: TextStyle(
+                              color: Colors.white,
+                              fontWeight: FontWeight.bold,
+                              fontSize: 16,
+                            ),
+                          ),
+                        ],
+                      ),
+                      Padding(
+                        padding: EdgeInsets.symmetric(horizontal: edge),
+                        child: FittedBox(
+                          fit: BoxFit.scaleDown,
+                          child: Text(
+                            '${dinhDangSo(tongChi)} đ',
+                            style: const TextStyle(
+                              color: Color(0xFFF08080),
+                              fontSize: 24,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                        ),
+                      ),
+                      const SizedBox(height: 4),
+                      Expanded(
+                        child: ListView.builder(
+                          padding: EdgeInsets.symmetric(
+                              horizontal: edge, vertical: 6),
+                          itemCount: danhSachChi.length,
+                          itemBuilder: (context, index) {
+                            final item = danhSachChi[index];
+                            final timeText = dinhDangGio(item.thoiGian);
+                            final moneyText = '${dinhDangSo(item.soTien)} đ';
+                            final tenChiTieu = item.tenChiTieu ?? 'Khác';
+
+                            return GestureDetector(
+                              onTap: () {
+                                if (dangChonXoa) {
+                                  xacNhanXoa(index);
+                                } else {
+                                  chinhSuaChiTieu(index);
+                                }
+                              },
+                              child: Container(
+                                margin: const EdgeInsets.symmetric(vertical: 4),
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 10,
+                                  vertical: 10,
+                                ),
+                                decoration: BoxDecoration(
+                                  color: dangChonXoa
+                                      ? Colors.red.withOpacity(0.15)
+                                      : Colors.white12,
+                                  borderRadius: BorderRadius.circular(12),
+                                  border: dangChonXoa
+                                      ? Border.all(
+                                          color: Colors.redAccent
+                                              .withOpacity(0.5),
+                                          width: 1)
+                                      : null,
+                                ),
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Row(
+                                      children: [
+                                        Expanded(
+                                          child: Text(
+                                            tenChiTieu,
+                                            style: const TextStyle(
+                                              color: Colors.white,
+                                              fontSize: 12,
+                                              fontWeight: FontWeight.w600,
+                                            ),
+                                            maxLines: 1,
+                                            overflow: TextOverflow.ellipsis,
+                                          ),
+                                        ),
+                                        if (dangChonXoa)
+                                          const Icon(
+                                            Icons.remove_circle_outline,
+                                            color: Colors.redAccent,
+                                            size: 14,
+                                          )
+                                        else
+                                          const Icon(
+                                            Icons.edit,
+                                            color: Colors.white30,
+                                            size: 14,
+                                          ),
+                                      ],
+                                    ),
+                                    const SizedBox(height: 4),
+                                    Row(
+                                      mainAxisAlignment:
+                                          MainAxisAlignment.spaceBetween,
+                                      children: [
+                                        Text(
+                                          timeText,
+                                          style: const TextStyle(
+                                            color: Colors.white54,
+                                            fontSize: 10,
+                                          ),
+                                        ),
+                                        Text(
+                                          moneyText,
+                                          style: const TextStyle(
+                                            color: Color(0xFFF08080),
+                                            fontSize: 12,
+                                            fontWeight: FontWeight.w600,
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            );
+                          },
+                        ),
+                      ),
+                      Padding(
+                        padding: const EdgeInsets.only(bottom: 16, top: 8),
+                        child: Row(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            GestureDetector(
+                              onTap: () {
+                                if (dangChonXoa) {
+                                  huyChonXoa();
+                                } else {
+                                  batDauChonXoa();
+                                }
+                              },
+                              child: _circleBtn(
+                                dangChonXoa
+                                    ? Icons.close
+                                    : Icons.delete_outline,
+                                dangChonXoa
+                                    ? const Color(0xFF555555)
+                                    : (danhSachChi.isEmpty
+                                        ? const Color(0xFF333333)
+                                        : const Color(0xFFE57373)),
+                                colorIcon: danhSachChi.isEmpty && !dangChonXoa
+                                    ? Colors.white38
+                                    : Colors.white,
+                              ),
+                            ),
+                            const SizedBox(width: 24),
+                            GestureDetector(
+                              onTap: dangChonXoa ? null : themChiTieu,
+                              child: _circleBtn(
+                                Icons.add,
+                                dangChonXoa
+                                    ? const Color(0xFF333333)
+                                    : const Color(0xFF4CAF93),
+                                colorIcon:
+                                    dangChonXoa ? Colors.white38 : Colors.white,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
+              );
+            },
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _circleBtn(IconData icon, Color bg, {Color colorIcon = Colors.white}) {
+    return Container(
+      width: 44,
+      height: 44,
+      decoration: BoxDecoration(color: bg, shape: BoxShape.circle),
+      child: Icon(icon, color: colorIcon, size: 22),
+    );
+  }
+}
+
+// =================== XÁC NHẬN XÓA KHÁC SCREEN ===================
+
+class XacNhanXoaKhacScreen extends StatelessWidget {
+  final int soTien;
+  final String tenChiTieu;
+
+  const XacNhanXoaKhacScreen({
+    super.key,
+    required this.soTien,
+    required this.tenChiTieu,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: Colors.black,
+      body: SafeArea(
+        child: Stack(
+          children: [
+            const _WatchBackground(),
+            Center(
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 24),
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    const Text(
+                      'Xóa khoản chi',
+                      style: TextStyle(
+                        color: Colors.white,
+                        fontSize: 14,
+                      ),
+                      textAlign: TextAlign.center,
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      tenChiTieu,
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 14,
+                        fontWeight: FontWeight.bold,
+                      ),
+                      textAlign: TextAlign.center,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                    FittedBox(
+                      fit: BoxFit.scaleDown,
+                      child: Text(
+                        '${dinhDangSo(soTien)} đ',
+                        style: const TextStyle(
+                          color: Color(0xFFF08080),
+                          fontSize: 20,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 20),
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        GestureDetector(
+                          onTap: () => Navigator.pop(context, true),
+                          child: _circleBtn(
+                              Icons.delete_outline, const Color(0xFFE57373)),
+                        ),
+                        const SizedBox(width: 32),
+                        GestureDetector(
+                          onTap: () => Navigator.pop(context, false),
+                          child:
+                              _circleBtn(Icons.close, const Color(0xFF666666)),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _circleBtn(IconData icon, Color color) {
+    return Container(
+      width: 48,
+      height: 48,
+      decoration: BoxDecoration(color: color, shape: BoxShape.circle),
+      child: Icon(icon, color: Colors.white, size: 24),
+    );
+  }
+}
+
+// =================== NHẬP CHI TIÊU KHÁC SCREEN ===================
+
+class NhapChiTieuKhacScreen extends StatefulWidget {
+  final String? tenBanDau;
+  final int? soTienBanDau;
+
+  const NhapChiTieuKhacScreen({
+    super.key,
+    this.tenBanDau,
+    this.soTienBanDau,
+  });
+
+  @override
+  State<NhapChiTieuKhacScreen> createState() => _NhapChiTieuKhacScreenState();
+}
+
+class _NhapChiTieuKhacScreenState extends State<NhapChiTieuKhacScreen> {
+  late final TextEditingController _tenController;
+  late final TextEditingController _soTienController;
+  final FocusNode _tenFocusNode = FocusNode();
+  final FocusNode _soTienFocusNode = FocusNode();
+
+  bool get isEdit => widget.tenBanDau != null || widget.soTienBanDau != null;
+
+  @override
+  void initState() {
+    super.initState();
+    _tenController = TextEditingController(text: widget.tenBanDau ?? '');
+    _soTienController = TextEditingController(
+      text: widget.soTienBanDau != null ? widget.soTienBanDau.toString() : '',
+    );
+    
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) {
+        _tenFocusNode.requestFocus();
+        if (isEdit && _tenController.text.isNotEmpty) {
+          _tenController.selection = TextSelection(
+            baseOffset: 0,
+            extentOffset: _tenController.text.length,
+          );
+        }
+      }
+    });
+  }
+
+  @override
+  void dispose() {
+    _tenController.dispose();
+    _soTienController.dispose();
+    _tenFocusNode.dispose();
+    _soTienFocusNode.dispose();
+    super.dispose();
+  }
+
+  void _xacNhan() {
+    final ten = _tenController.text.trim();
+    final soTienText = _soTienController.text.trim();
+    
+    if (ten.isEmpty || soTienText.isEmpty) {
+      return;
+    }
+
+    final soTien = int.tryParse(soTienText);
+    if (soTien == null || soTien <= 0) {
+      return;
+    }
+
+    Navigator.pop(context, {
+      'tenChiTieu': ten,
+      'soTien': soTien,
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: Colors.black,
+      body: SafeArea(
+        child: Stack(
+          children: [
+            const _WatchBackground(),
+            Center(
+              child: SingleChildScrollView(
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Text(
+                      isEdit ? 'Sửa chi tiêu' : 'Thêm chi tiêu khác',
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 14,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                    const SizedBox(height: 0),
+                    Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 30),
+                      child: TextField(
+                        focusNode: _tenFocusNode,
+                        controller: _tenController,
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 14,
+                        ),
+                        textAlign: TextAlign.center,
+                        decoration: const InputDecoration(
+                          hintText: 'Tên chi tiêu',
+                          hintStyle: TextStyle(color: Colors.white24, fontSize: 14),
+                          enabledBorder: UnderlineInputBorder(
+                            borderSide: BorderSide(color: Colors.white24),
+                          ),
+                          focusedBorder: UnderlineInputBorder(
+                            borderSide: BorderSide(color: Colors.white70),
+                          ),
+                        ),
+                        onSubmitted: (_) => _soTienFocusNode.requestFocus(),
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                    Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 30),
+                      child: TextField(
+                        focusNode: _soTienFocusNode,
+                        controller: _soTienController,
+                        keyboardType: TextInputType.number,
+                        inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+                        style: const TextStyle(
+                          color: Color(0xFFF08080),
+                          fontSize: 22,
+                          fontWeight: FontWeight.bold,
+                        ),
+                        textAlign: TextAlign.center,
+                        decoration: const InputDecoration(
+                          hintText: 'Số tiền',
+                          hintStyle: TextStyle(color: Colors.white24, fontSize: 18),
+                          enabledBorder: UnderlineInputBorder(
+                            borderSide: BorderSide(color: Colors.white24),
+                          ),
+                          focusedBorder: UnderlineInputBorder(
+                            borderSide: BorderSide(color: Color(0xFFF08080)),
+                          ),
+                        ),
+                        onSubmitted: (_) => _xacNhan(),
+                      ),
+                    ),
+                    const SizedBox(height: 24),
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        GestureDetector(
+                          onTap: () => Navigator.pop(context),
+                          child: _circleBtn(Icons.close, const Color(0xFF555555)),
+                        ),
+                        const SizedBox(width: 32),
+                        GestureDetector(
+                          onTap: _xacNhan,
+                          child: _circleBtn(Icons.check, const Color(0xFF4CAF93)),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _circleBtn(IconData icon, Color color) {
+    return Container(
+      width: 44,
+      height: 44,
+      decoration: BoxDecoration(color: color, shape: BoxShape.circle),
+      child: Icon(icon, color: Colors.white, size: 22),
+    );
+  }
+}
+
+// =================== SETTINGS SCREEN ===================
+
+class SettingsScreen extends StatelessWidget {
+  const SettingsScreen({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    final edge = (MediaQuery.of(context).size.width * 0.10).clamp(16.0, 36.0);
+
+    return Scaffold(
+      backgroundColor: Colors.black,
+      body: SafeArea(
+        child: Stack(
+          children: [
+            const _WatchBackground(),
+            Positioned(
+              top: 12,
+              left: edge,
+              child: IconButton(
+                icon: const Icon(
+                  Icons.arrow_back_ios_new_rounded,
+                  color: Colors.white70,
+                  size: 16,
+                ),
+                onPressed: () => Navigator.pop(context),
+              ),
+            ),
+            Center(
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  const Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Icon(Icons.settings_rounded, color: Colors.white, size: 18),
+                      SizedBox(width: 6),
+                      Text(
+                        'Cài đặt',
+                        style: TextStyle(
+                          color: Colors.white,
+                          fontWeight: FontWeight.bold,
+                          fontSize: 16,
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 16),
+                  Container(
+                    padding: const EdgeInsets.all(8),
+                    decoration: BoxDecoration(
+                      color: Colors.white,
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    child: ClipRRect(
+                      borderRadius: BorderRadius.circular(8),
+                      child: Image.asset(
+                        'assets/images/qr_code.png',
+                        width: 100,
+                        height: 100,
+                        fit: BoxFit.contain,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  const Padding(
+                    padding: EdgeInsets.symmetric(horizontal: 24),
+                    child: Text(
+                      'Liên hệ tôi',
+                      style: TextStyle(
+                        color: Colors.white70,
+                        fontSize: 12,
+                      ),
+                      textAlign: TextAlign.center,
+                    ),
+                  ),
+                  const SizedBox(height: 4),
+                  const Text(
+                    'vochicuong.id.vn',
+                    style: TextStyle(
+                      color: Color(0xFF4CAF93),
+                      fontSize: 11,
+                      fontWeight: FontWeight.w500,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
     );
   }
 }
