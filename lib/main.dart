@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:flutter_native_splash/flutter_native_splash.dart';
 
 // Global SharedPreferences instance for faster access
 SharedPreferences? _prefs;
@@ -22,8 +23,9 @@ final ThemeData _appTheme = ThemeData(
 );
 
 void main() {
-  // Show UI immediately - don't await anything!
-  WidgetsFlutterBinding.ensureInitialized();
+  // Preserve splash screen while app initializes
+  WidgetsBinding widgetsBinding = WidgetsFlutterBinding.ensureInitialized();
+  FlutterNativeSplash.preserve(widgetsBinding: widgetsBinding);
   
   // Start SharedPreferences loading in background (non-blocking)
   SharedPreferences.getInstance().then((prefs) => _prefs = prefs);
@@ -337,6 +339,8 @@ class _ChiTieuAppState extends State<ChiTieuApp> {
       setState(() {
         _isLoading = false;
       });
+      // Remove splash screen now that app is ready
+      FlutterNativeSplash.remove();
     }
   }
 

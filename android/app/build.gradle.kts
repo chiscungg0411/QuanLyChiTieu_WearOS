@@ -36,28 +36,34 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
 
-    buildTypes {
-        release {
-            // Debug keystore để `flutter run --release` hoạt động; tùy chỉnh lại khi ký thực tế.
-            signingConfig = signingConfigs.getByName("debug")
-            isShrinkResources = false
-        }
-    }
-
     signingConfigs {
         create("release") {
             val storeFilePath = keystoreProperties["storeFile"] as String?
-            storeFile = storeFilePath?.let { file(it) }
-            storePassword = keystoreProperties["storePassword"] as String?
-            keyAlias = keystoreProperties["keyAlias"] as String?
-            keyPassword = keystoreProperties["keyPassword"] as String?
+            if (storeFilePath != null) {
+                storeFile = file(storeFilePath)
+                storePassword = keystoreProperties["storePassword"] as String?
+                keyAlias = keystoreProperties["keyAlias"] as String?
+                keyPassword = keystoreProperties["keyPassword"] as String?
+            }
         }
     }
 
     buildTypes {
+        getByName("debug") {
+            isMinifyEnabled = false
+            isShrinkResources = false
+        }
         getByName("release") {
-            isMinifyEnabled = false   // điều chỉnh nếu bạn dùng R8/ProGuard
+            isMinifyEnabled = true
+            isShrinkResources = true
+            proguardFiles(
+                getDefaultProguardFile("proguard-android-optimize.txt"),
+                "proguard-rules.pro"
+            )
+            // Use release signing if available, otherwise fall back to debug
+            val releaseConfig = signingConfigs.findByName("release")
             signingConfig = signingConfigs.getByName("release")
+            signingConfig = if (releaseConfig?.storeFile != null) releaseConfig else signingConfigs.getByName("debug")
         }
     }
 
