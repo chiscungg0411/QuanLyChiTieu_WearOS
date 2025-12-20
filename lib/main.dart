@@ -434,26 +434,30 @@ class _ChiTieuAppState extends State<ChiTieuApp> {
     }
     await prefs.setString(_keyLichSuThang, jsonEncode(lichSuThangData));
     
-    // Collect all today's expenses for Tile
-    final List<Map<String, dynamic>> allExpenses = [];
+    // Collect expenses aggregated by category for Tile
+    final Map<ChiTieuMuc, int> categoryTotals = {};
     int todayTotal = 0;
     for (final muc in ChiTieuMuc.values) {
       if (muc == ChiTieuMuc.lichSu || muc == ChiTieuMuc.caiDat) continue;
       final items = _chiTheoMuc[muc] ?? <ChiTieuItem>[];
+      int categorySum = 0;
       for (final item in items) {
         todayTotal += item.soTien;
-        allExpenses.add({
-          'name': item.tenChiTieu ?? muc.ten,
-          'category': muc.name, // Category key for icon mapping
-          'categoryVi': _getCategoryNameVi(muc), // Vietnamese category name with diacritics
-          'amount': item.soTien,
-        });
+        categorySum += item.soTien;
+      }
+      if (categorySum > 0) {
+        categoryTotals[muc] = categorySum;
       }
     }
     
-    // Sort by amount descending and get top 2
-    allExpenses.sort((a, b) => (b['amount'] as int).compareTo(a['amount'] as int));
-    final top2 = allExpenses.take(2).toList();
+    // Convert to list and sort by total amount descending
+    final List<Map<String, dynamic>> categoryList = categoryTotals.entries.map((e) => <String, dynamic>{
+      'category': e.key.name,
+      'categoryVi': _getCategoryNameVi(e.key),
+      'amount': e.value,
+    }).toList();
+    categoryList.sort((a, b) => (b['amount'] as int).compareTo(a['amount'] as int));
+    final top2 = categoryList.take(2).toList();
     
     // Save tile data
     await prefs.setInt('tile_today_total', todayTotal);

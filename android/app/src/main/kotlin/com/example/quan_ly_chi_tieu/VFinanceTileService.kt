@@ -267,7 +267,7 @@ class VFinanceTileService : TileService() {
                         ModifiersBuilders.Modifiers.Builder()
                             .setPadding(
                                 ModifiersBuilders.Padding.Builder()
-                                    .setTop(dp(4f))
+                                    .setTop(dp(6f))
                                     .build()
                             )
                             .build()
