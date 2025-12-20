@@ -4,11 +4,23 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
-void main() {
+// Global SharedPreferences instance for faster access
+SharedPreferences? _prefs;
+
+// Cached regex for number formatting - avoid creating new RegExp on every call
+final RegExp _numberFormatRegex = RegExp(r'(\d{1,3})(?=(\d{3})+(?!\d))');
+
+Future<void> main() async {
+  // Initialize bindings first for faster startup
+  WidgetsFlutterBinding.ensureInitialized();
+  
+  // Pre-cache SharedPreferences
+  _prefs = await SharedPreferences.getInstance();
+  
   runApp(
     MaterialApp(
       debugShowCheckedModeBanner: false,
-      title: 'CFinance',
+      title: 'VFinance',
       theme: ThemeData(
         brightness: Brightness.dark,
         scaffoldBackgroundColor: Colors.black,
@@ -27,7 +39,7 @@ void main() {
 
 String dinhDangSo(int value) {
   return value.toString().replaceAllMapped(
-    RegExp(r'(\d{1,3})(?=(\d{3})+(?!\d))'),
+    _numberFormatRegex,
     (m) => '${m[1]}.',
   );
 }
@@ -201,22 +213,13 @@ extension ChiTieuMucX on ChiTieuMuc {
   }
 }
 
-// =================== BACKGROUND ===================
-
+// Simplified background for faster rendering
 class _WatchBackground extends StatelessWidget {
   const _WatchBackground();
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      decoration: const BoxDecoration(
-        gradient: RadialGradient(
-          center: Alignment(0, -0.35),
-          radius: 1,
-          colors: [Color(0xFF000000), Colors.black],
-        ),
-      ),
-    );
+    return const ColoredBox(color: Colors.black);
   }
 }
 
@@ -249,21 +252,37 @@ class _ChiTieuAppState extends State<ChiTieuApp> {
   static const String _keyChiTheoMuc = 'chi_theo_muc';
   static const String _keyLichSuThang = 'lich_su_thang';
 
+  // Cached values for performance
+  int? _cachedTongHomNay;
+  final Map<ChiTieuMuc, int> _cachedTongMuc = {};
+  Timer? _dayCheckTimer;
+
   static DateTime _asDate(DateTime dt) => DateTime(dt.year, dt.month, dt.day);
 
   bool _sameDay(DateTime a, DateTime b) =>
       a.year == b.year && a.month == b.month && a.day == b.day;
 
+  void _invalidateCache() {
+    _cachedTongHomNay = null;
+    _cachedTongMuc.clear();
+  }
+
   @override
   void initState() {
     super.initState();
     _loadData();
-    Timer.periodic(const Duration(minutes: 1), (_) => _checkNewDay());
+    _dayCheckTimer = Timer.periodic(const Duration(minutes: 1), (_) => _checkNewDay());
   }
 
-  // Load data from SharedPreferences
+  @override
+  void dispose() {
+    _dayCheckTimer?.cancel();
+    super.dispose();
+  }
+
+  // Load data from SharedPreferences (uses pre-cached instance)
   Future<void> _loadData() async {
-    final prefs = await SharedPreferences.getInstance();
+    final prefs = _prefs ?? await SharedPreferences.getInstance();
     
     // Load _chiTheoMuc
     final chiTheoMucJson = prefs.getString(_keyChiTheoMuc);
@@ -304,14 +323,15 @@ class _ChiTieuAppState extends State<ChiTieuApp> {
       } catch (_) {}
     }
     
+    _invalidateCache();
     if (mounted) {
       setState(() {});
     }
   }
 
-  // Save data to SharedPreferences
+  // Save data to SharedPreferences (uses pre-cached instance)
   Future<void> _saveData() async {
-    final prefs = await SharedPreferences.getInstance();
+    final prefs = _prefs ?? await SharedPreferences.getInstance();
     
     // Save _chiTheoMuc
     final Map<String, dynamic> chiTheoMucData = {};
@@ -342,6 +362,7 @@ class _ChiTieuAppState extends State<ChiTieuApp> {
         setState(() {
           _luuLichSuNgayHomQua();
           _currentDay = _asDate(now);
+          _invalidateCache();
         });
         _saveData();
       }
@@ -395,17 +416,26 @@ class _ChiTieuAppState extends State<ChiTieuApp> {
 
     _lichSuThang.putIfAbsent(monthKey, () => {});
     _lichSuThang[monthKey]![dayKey] = allCurrentDayEntries;
+    _invalidateCache();
     setState(() {});
     _saveData();
   }
 
   int _tongMuc(ChiTieuMuc muc) {
+    if (_cachedTongMuc.containsKey(muc)) {
+      return _cachedTongMuc[muc]!;
+    }
     final list = _chiTheoMuc[muc] ?? <ChiTieuItem>[];
-    return list.fold(0, (a, b) => a + b.soTien);
+    final total = list.fold(0, (a, b) => a + b.soTien);
+    _cachedTongMuc[muc] = total;
+    return total;
   }
 
   int get _tongHomNay {
-    return _chiTheoMuc.entries.fold<int>(
+    if (_cachedTongHomNay != null) {
+      return _cachedTongHomNay!;
+    }
+    _cachedTongHomNay = _chiTheoMuc.entries.fold<int>(
       0,
       (sum, entry) {
         if (entry.key == ChiTieuMuc.lichSu || entry.key == ChiTieuMuc.caiDat) return sum;
@@ -415,6 +445,7 @@ class _ChiTieuAppState extends State<ChiTieuApp> {
         );
       },
     );
+    return _cachedTongHomNay!;
   }
 
   Future<void> _moMuc(ChiTieuMuc muc) async {
@@ -628,6 +659,12 @@ class _CategoryButton extends StatelessWidget {
   final int tongTien;
   final VoidCallback onTap;
 
+  // Pre-cached decoration for performance
+  static final BorderRadius _borderRadius = BorderRadius.circular(18);
+  static const BoxDecoration _decoration = BoxDecoration(
+    color: Color(0xFF1B1B1B),
+  );
+
   const _CategoryButton({
     required this.icon,
     required this.tongTien,
@@ -640,11 +677,8 @@ class _CategoryButton extends StatelessWidget {
 
     return GestureDetector(
       onTap: onTap,
-      child: Container(
-        decoration: BoxDecoration(
-          color: const Color(0xFF1B1B1B),
-          borderRadius: BorderRadius.circular(18),
-        ),
+      child: DecoratedBox(
+        decoration: _decoration.copyWith(borderRadius: _borderRadius),
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
@@ -2304,6 +2338,70 @@ class SettingsScreen extends StatelessWidget {
         child: Stack(
           children: [
             const _WatchBackground(),
+            Center(
+              child: Padding(
+                padding: const EdgeInsets.only(top: 24),
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    const Row(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        Icon(Icons.settings_rounded, color: Colors.white, size: 18),
+                        SizedBox(width: 6),
+                        Text(
+                          'Cài đặt',
+                          style: TextStyle(
+                            color: Colors.white,
+                            fontWeight: FontWeight.bold,
+                            fontSize: 16,
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 12),
+                    Container(
+                      padding: const EdgeInsets.all(8),
+                      decoration: BoxDecoration(
+                        color: Colors.white,
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      child: ClipRRect(
+                        borderRadius: BorderRadius.circular(8),
+                        child: Image.asset(
+                          'assets/images/qr_code.png',
+                          width: 90,
+                          height: 90,
+                          fit: BoxFit.contain,
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    const Padding(
+                      padding: EdgeInsets.symmetric(horizontal: 24),
+                      child: Text(
+                        'Liên hệ tôi',
+                        style: TextStyle(
+                          color: Colors.white70,
+                          fontSize: 11,
+                        ),
+                        textAlign: TextAlign.center,
+                      ),
+                    ),
+                    const SizedBox(height: 2),
+                    const Text(
+                      'vochicuong.id.vn',
+                      style: TextStyle(
+                        color: Color(0xFF4CAF93),
+                        fontSize: 10,
+                        fontWeight: FontWeight.w500,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+            // Back button on top of everything
             Positioned(
               top: 12,
               left: edge,
@@ -2314,66 +2412,6 @@ class SettingsScreen extends StatelessWidget {
                   size: 16,
                 ),
                 onPressed: () => Navigator.pop(context),
-              ),
-            ),
-            Center(
-              child: Column(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  const Row(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      Icon(Icons.settings_rounded, color: Colors.white, size: 18),
-                      SizedBox(width: 6),
-                      Text(
-                        'Cài đặt',
-                        style: TextStyle(
-                          color: Colors.white,
-                          fontWeight: FontWeight.bold,
-                          fontSize: 16,
-                        ),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 16),
-                  Container(
-                    padding: const EdgeInsets.all(8),
-                    decoration: BoxDecoration(
-                      color: Colors.white,
-                      borderRadius: BorderRadius.circular(12),
-                    ),
-                    child: ClipRRect(
-                      borderRadius: BorderRadius.circular(8),
-                      child: Image.asset(
-                        'assets/images/qr_code.png',
-                        width: 100,
-                        height: 100,
-                        fit: BoxFit.contain,
-                      ),
-                    ),
-                  ),
-                  const SizedBox(height: 12),
-                  const Padding(
-                    padding: EdgeInsets.symmetric(horizontal: 24),
-                    child: Text(
-                      'Liên hệ tôi',
-                      style: TextStyle(
-                        color: Colors.white70,
-                        fontSize: 12,
-                      ),
-                      textAlign: TextAlign.center,
-                    ),
-                  ),
-                  const SizedBox(height: 4),
-                  const Text(
-                    'vochicuong.id.vn',
-                    style: TextStyle(
-                      color: Color(0xFF4CAF93),
-                      fontSize: 11,
-                      fontWeight: FontWeight.w500,
-                    ),
-                  ),
-                ],
               ),
             ),
           ],
