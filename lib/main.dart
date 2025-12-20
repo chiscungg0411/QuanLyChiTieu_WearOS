@@ -546,7 +546,10 @@ class _ChiTieuAppState extends State<ChiTieuApp> {
                 const _WatchBackground(),
                 Column(
                   children: [
-                    // Animated header that collapses on scroll
+                    // Fixed clock at top - not affected by scroll
+                    const SizedBox(height: 4),
+                    const ClockText(showSeconds: false),
+                    // Animated header that collapses on scroll (without clock)
                     ListenableBuilder(
                       listenable: _scrollAnimController,
                       builder: (context, child) {
@@ -554,22 +557,12 @@ class _ChiTieuAppState extends State<ChiTieuApp> {
                         // Interpolate values based on scroll progress
                         final headerScale = 1.0 - (progress * 0.3);
                         final headerOpacity = 1.0 - (progress * 0.6);
-                        final headerHeight = 4.0 + (1.0 - progress) * 2.0;
-                        final clockOpacity = 1.0 - (progress * 0.8);
                         
                         return ClipRect(
                           child: AnimatedContainer(
                             duration: const Duration(milliseconds: 50),
                             child: Column(
                               children: [
-                                SizedBox(height: headerHeight),
-                                Opacity(
-                                  opacity: clockOpacity.clamp(0.0, 1.0),
-                                  child: Transform.scale(
-                                    scale: headerScale,
-                                    child: const ClockText(showSeconds: false),
-                                  ),
-                                ),
                                 SizedBox(height: 6 * (1.0 - progress * 0.5)),
                                 Opacity(
                                   opacity: headerOpacity.clamp(0.0, 1.0),
@@ -2331,9 +2324,11 @@ class _NhapChiTieuKhacScreenState extends State<NhapChiTieuKhacScreen> {
                       child: TextField(
                         focusNode: _tenFocusNode,
                         controller: _tenController,
+                        keyboardType: TextInputType.text,
+                        textInputAction: TextInputAction.done,
                         style: const TextStyle(
                           color: Colors.white,
-                          fontSize: 14,
+                          fontSize: 16
                         ),
                         textAlign: TextAlign.center,
                         decoration: const InputDecoration(
@@ -2346,20 +2341,20 @@ class _NhapChiTieuKhacScreenState extends State<NhapChiTieuKhacScreen> {
                             borderSide: BorderSide(color: Colors.white70),
                           ),
                         ),
-                        onSubmitted: (_) => _soTienFocusNode.requestFocus(),
                       ),
                     ),
-                    const SizedBox(height: 12),
+                    const SizedBox(height: 6),
                     Padding(
                       padding: const EdgeInsets.symmetric(horizontal: 30),
                       child: TextField(
                         focusNode: _soTienFocusNode,
                         controller: _soTienController,
                         keyboardType: TextInputType.number,
+                        textInputAction: TextInputAction.done,
                         inputFormatters: [FilteringTextInputFormatter.digitsOnly],
                         style: const TextStyle(
                           color: Color(0xFFF08080),
-                          fontSize: 22,
+                          fontSize: 16,
                           fontWeight: FontWeight.bold,
                         ),
                         textAlign: TextAlign.center,
@@ -2373,7 +2368,6 @@ class _NhapChiTieuKhacScreenState extends State<NhapChiTieuKhacScreen> {
                             borderSide: BorderSide(color: Color(0xFFF08080)),
                           ),
                         ),
-                        onSubmitted: (_) => _xacNhan(),
                       ),
                     ),
                     const SizedBox(height: 24),
