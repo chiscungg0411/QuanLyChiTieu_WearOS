@@ -1037,8 +1037,9 @@ class _LichSuScreenState extends State<LichSuScreen> {
                                     child: Row(
                                       mainAxisAlignment: MainAxisAlignment.spaceBetween,
                                       children: [
-                                        Text(
-                                          () {
+                                        Flexible(
+                                          child: Text(
+                                            () {
                                             final parts = monthKey.split('/');
                                             final month = int.parse(parts[0]);
                                             final year = parts[1];
@@ -1053,7 +1054,9 @@ class _LichSuScreenState extends State<LichSuScreen> {
                                             fontSize: 10,
                                           ),
                                         ),
+                                      ),
                                         Flexible(
+                                          flex: 1,
                                           child: FittedBox(
                                             fit: BoxFit.scaleDown,
                                             child: Text(
@@ -1066,7 +1069,7 @@ class _LichSuScreenState extends State<LichSuScreen> {
                                             ),
                                           ),
                                         ),
-                                      ],
+                                      ],                                    
                                     ),
                                   ),
                                   ListView.builder(
@@ -1084,7 +1087,6 @@ class _LichSuScreenState extends State<LichSuScreen> {
                                         groupByCategory.putIfAbsent(entry.muc, () => []);
                                         groupByCategory[entry.muc]!.add(entry);
                                       }
-
                                       return Padding(
                                         padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
                                         child: Column(
@@ -1144,7 +1146,7 @@ class _LichSuScreenState extends State<LichSuScreen> {
                                                   child: Column(
                                                     crossAxisAlignment: CrossAxisAlignment.start,
                                                     children: [
-                                                      Row(
+                                                      Row(                                                                                     
                                                         children: [
                                                           Icon(muc.icon, size: 16, color: Colors.white70),
                                                           const SizedBox(width: 6),

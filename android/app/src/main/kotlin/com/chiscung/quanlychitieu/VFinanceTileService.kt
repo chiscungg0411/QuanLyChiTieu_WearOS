@@ -1,4 +1,4 @@
-package com.example.quan_ly_chi_tieu
+package com.chiscung.quanlychitieu
 
 import android.content.Context
 import androidx.wear.protolayout.ActionBuilders

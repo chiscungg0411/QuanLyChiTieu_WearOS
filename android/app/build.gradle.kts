@@ -16,12 +16,12 @@ plugins {
 }
 
 android {
-    namespace = "com.example.quan_ly_chi_tieu"
+    namespace = "com.chiscung.quanlychitieu"
     compileSdk = flutter.compileSdkVersion
     ndkVersion = flutter.ndkVersion
 
     defaultConfig {
-        applicationId = "com.example.quan_ly_chi_tieu"
+        applicationId = "com.chiscung.quanlychitieu"
 
         // Wear OS yêu cầu minSdk ≥ 28, targetSdk 34 cho Android 14 base.
         minSdk = 28
