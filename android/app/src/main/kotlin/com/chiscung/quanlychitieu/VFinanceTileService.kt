@@ -343,6 +343,14 @@ class VFinanceTileService : TileService() {
         return formatter.format(value).replace(",", ".")
     }
     
+    // Helper function to format number with dot separator
+    private fun formatWithDots(num: Double): String {
+        val intPart = num.toLong()
+        if (intPart < 1000) return intPart.toString()
+        val formatter = NumberFormat.getNumberInstance(Locale("vi", "VN"))
+        return formatter.format(intPart).replace(",", ".")
+    }
+    
     // Compact format for expense boxes
     // Vietnamese: T (tỷ=10^9), Tr (triệu=10^6), K (nghìn=10^3)
     // English: T (trillion=10^12), B (billion=10^9), M (million=10^6), K (thousand=10^3)
@@ -354,13 +362,13 @@ class VFinanceTileService : TileService() {
                 val num = value / 1_000_000_000_000.0
                 if (isEn) {
                     // English: T = trillion
-                    if (num >= 1000) String.format("%.0f", num / 1000) + "Q" // quadrillion
-                    else if (num >= 1) String.format("%.0f", num) + "T"
+                    if (num >= 1000) formatWithDots(num / 1000) + "Q" // quadrillion
+                    else if (num >= 1) formatWithDots(num) + "T"
                     else String.format("%.1f", num).replace(".0", "") + "T"
                 } else {
                     // Vietnamese: T = tỷ (10^9), so 10^12 = nghìn tỷ
                     val tyValue = value / 1_000_000_000.0
-                    String.format("%.0f", tyValue) + "T"
+                    formatWithDots(tyValue) + "T"
                 }
             }
             // >= 1 billion (10^9)
@@ -368,24 +376,23 @@ class VFinanceTileService : TileService() {
                 val num = value / 1_000_000_000.0
                 if (isEn) {
                     // English: B = billion
-                    if (num >= 100) String.format("%.0f", num) + "B"
-                    else String.format("%.0f", num) + "B"
+                    formatWithDots(num) + "B"
                 } else {
                     // Vietnamese: T = tỷ
-                    String.format("%.0f", num) + "T"
+                    formatWithDots(num) + "T"
                 }
             }
             // >= 1 million (10^6)
             value >= 1_000_000L -> {
                 val num = value / 1_000_000.0
                 val suffix = if (isEn) "M" else "Tr"
-                if (num >= 100) String.format("%.0f", num) + suffix
+                if (num >= 100) formatWithDots(num) + suffix
                 else String.format("%.1f", num).replace(".0", "") + suffix
             }
             // >= 1 thousand (10^3)
             value >= 1_000L -> {
                 val num = value / 1_000.0
-                if (num >= 100) String.format("%.0f", num) + "K"
+                if (num >= 100) formatWithDots(num) + "K"
                 else String.format("%.1f", num).replace(".0", "") + "K"
             }
             else -> value.toString()

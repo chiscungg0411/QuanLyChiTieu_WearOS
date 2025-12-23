@@ -11,6 +11,8 @@ import androidx.wear.watchface.complications.data.ShortTextComplicationData
 import androidx.wear.watchface.complications.data.MonochromaticImage
 import androidx.wear.watchface.complications.datasource.ComplicationRequest
 import androidx.wear.watchface.complications.datasource.SuspendingComplicationDataSourceService
+import java.text.NumberFormat
+import java.util.Locale
 
 private const val PREFS_NAME = "FlutterSharedPreferences"
 
@@ -101,6 +103,14 @@ class VFinanceComplicationService : SuspendingComplicationDataSourceService() {
         }
     }
 
+    // Helper function to format number with dot separator
+    private fun formatWithDots(num: Double): String {
+        val intPart = num.toLong()
+        if (intPart < 1000) return intPart.toString()
+        val formatter = NumberFormat.getNumberInstance(Locale("vi", "VN"))
+        return formatter.format(intPart).replace(",", ".")
+    }
+
     // Split format: returns number and suffix separately
     private fun formatCompactSplit(value: Long, language: String = "vi"): FormattedAmount {
         val isEn = language == "en"
@@ -108,32 +118,32 @@ class VFinanceComplicationService : SuspendingComplicationDataSourceService() {
             value >= 1_000_000_000_000L -> {
                 val num = value / 1_000_000_000_000.0
                 if (isEn) {
-                    if (num >= 1000) FormattedAmount(String.format("%.0f", num / 1000), "Q")
-                    else if (num >= 1) FormattedAmount(String.format("%.0f", num), "T")
+                    if (num >= 1000) FormattedAmount(formatWithDots(num / 1000), "Q")
+                    else if (num >= 1) FormattedAmount(formatWithDots(num), "T")
                     else FormattedAmount(String.format("%.1f", num).replace(".0", ""), "T")
                 } else {
                     val tyValue = value / 1_000_000_000.0
-                    FormattedAmount(String.format("%.0f", tyValue), "T")
+                    FormattedAmount(formatWithDots(tyValue), "T")
                 }
             }
             value >= 1_000_000_000L -> {
                 val num = value / 1_000_000_000.0
                 if (isEn) {
-                    FormattedAmount(String.format("%.0f", num), "B")
+                    FormattedAmount(formatWithDots(num), "B")
                 } else {
-                    FormattedAmount(String.format("%.0f", num), "T")
+                    FormattedAmount(formatWithDots(num), "T")
                 }
             }
             value >= 1_000_000L -> {
                 val num = value / 1_000_000.0
                 val suffix = if (isEn) "M" else "TR"
-                val numStr = if (num >= 100) String.format("%.0f", num)
+                val numStr = if (num >= 100) formatWithDots(num)
                              else String.format("%.1f", num).replace(".0", "")
                 FormattedAmount(numStr, suffix)
             }
             value >= 1_000L -> {
                 val num = value / 1_000.0
-                val numStr = if (num >= 100) String.format("%.0f", num)
+                val numStr = if (num >= 100) formatWithDots(num)
                              else String.format("%.1f", num).replace(".0", "")
                 FormattedAmount(numStr, "K")
             }
