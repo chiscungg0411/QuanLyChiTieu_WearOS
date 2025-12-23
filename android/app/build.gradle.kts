@@ -90,6 +90,9 @@ dependencies {
     implementation("androidx.wear.protolayout:protolayout-expression:1.0.0")
     implementation("com.google.guava:guava:31.1-android")
     
+    // Wear OS Complications
+    implementation("androidx.wear.watchface:watchface-complications-data-source-ktx:1.2.0")
+    
     // Coroutines for async tile operations
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-guava:1.7.3")

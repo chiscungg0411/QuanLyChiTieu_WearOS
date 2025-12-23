@@ -463,6 +463,14 @@ class _ChiTieuAppState extends State<ChiTieuApp> {
     await prefs.setString('tile_today_total', todayTotal.toString());
     await prefs.setString('app_language', _appLanguage);
     await prefs.setString('tile_top_expenses', jsonEncode(top2));
+    
+    // Trigger complication update immediately
+    try {
+      const channel = MethodChannel('com.chiscung.quanlychitieu/complication');
+      await channel.invokeMethod('updateComplication');
+    } catch (_) {
+      // Ignore errors - complication may not be active
+    }
   }
 
   void _checkNewDay() {
@@ -1055,8 +1063,7 @@ class _LichSuScreenState extends State<LichSuScreen> {
                                           ),
                                         ),
                                       ),
-                                        Flexible(
-                                          
+                                        Flexible(                                          
                                           child: FittedBox(
                                             fit: BoxFit.scaleDown,
                                             child: Text(
