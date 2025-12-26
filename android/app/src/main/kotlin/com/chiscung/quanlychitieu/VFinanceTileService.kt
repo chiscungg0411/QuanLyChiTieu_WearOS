@@ -31,13 +31,25 @@ class VFinanceTileService : TileService() {
         val todayDate = java.text.SimpleDateFormat("dd/MM/yyyy", java.util.Locale.getDefault()).format(java.util.Date())
         val isDataFromToday = savedDate == todayDate
         
-        val todayTotal = if (isDataFromToday) {
+        // Read currency and exchange rate settings
+        val currency = prefs.getString("flutter.app_currency", "đ") ?: "đ"
+        val exchangeRate = try {
+            // Try to read as Float first (might be stored as Float)
+            prefs.getFloat("flutter.exchange_rate", 0.00004f).toDouble()
+        } catch (e: Exception) {
             try {
-                // Read as String (most reliable cross-platform format)
+                // Try reading as Long (stored as raw bits)
+                java.lang.Double.longBitsToDouble(prefs.getLong("flutter.exchange_rate", 0L))
+            } catch (e2: Exception) {
+                0.00004 // Default fallback
+            }
+        }
+        
+        val todayTotalVnd = if (isDataFromToday) {
+            try {
                 val totalStr = prefs.getString("flutter.tile_today_total", "0") ?: "0"
                 totalStr.toLongOrNull() ?: 0L
             } catch (e: Exception) {
-                // Fallback for old Float/Double values
                 try { 
                     prefs.getFloat("flutter.tile_today_total", 0f).toLong()
                 } catch (e2: Exception) {
@@ -45,14 +57,21 @@ class VFinanceTileService : TileService() {
                 }
             }
         } else {
-            0L // Reset to 0 if data is not from today
+            0L
+        }
+        
+        // Convert to USD if currency is $
+        val todayTotal = if (currency == "$") {
+            (todayTotalVnd * exchangeRate).toLong()
+        } else {
+            todayTotalVnd
         }
         
         val language = prefs.getString("flutter.app_language", "vi") ?: "vi"
         val topExpensesJson = if (isDataFromToday) {
             prefs.getString("flutter.tile_top_expenses", "[]") ?: "[]"
         } else {
-            "[]" // Reset to empty if data is not from today
+            "[]"
         }
         
         // Parse top 2 expenses  
@@ -66,22 +85,25 @@ class VFinanceTileService : TileService() {
             if (jsonArray.length() >= 1) {
                 val obj1 = jsonArray.getJSONObject(0)
                 val cat1 = obj1.optString("category", "khac")
-                val amt1 = obj1.optLong("amount", 0L)
+                val amt1Vnd = obj1.optLong("amount", 0L)
+                val amt1 = if (currency == "$") (amt1Vnd * exchangeRate).toLong() else amt1Vnd
                 val catName1 = if (language == "en") getCategoryNameEn(cat1) else obj1.optString("categoryVi", "Khác")
                 expense1Name = getCategoryIcon(cat1) + " " + truncateName(catName1)
-                expense1Amt = formatCompact(amt1, language)
+                expense1Amt = formatCompact(amt1, language, currency)
             }
             if (jsonArray.length() >= 2) {
                 val obj2 = jsonArray.getJSONObject(1)
                 val cat2 = obj2.optString("category", "khac")
-                val amt2 = obj2.optLong("amount", 0L)
+                val amt2Vnd = obj2.optLong("amount", 0L)
+                val amt2 = if (currency == "$") (amt2Vnd * exchangeRate).toLong() else amt2Vnd
                 val catName2 = if (language == "en") getCategoryNameEn(cat2) else obj2.optString("categoryVi", "Khác")
                 expense2Name = getCategoryIcon(cat2) + " " + truncateName(catName2)
-                expense2Amt = formatCompact(amt2, language)
+                expense2Amt = formatCompact(amt2, language, currency)
             }
         } catch (e: Exception) { }
         
-        val formattedAmount = formatCompact(todayTotal, language)
+        val formattedAmount = formatCompact(todayTotal, language, currency)
+        val currencySymbol = if (currency == "$") "$" else "đ"
         val titleText = if (language == "vi") "Tổng chi tiêu hôm nay" else "Total spending today"
         val topLabel = if (language == "vi") "Chi tiêu lớn nhất" else "Top spending"
         
@@ -97,7 +119,8 @@ class VFinanceTileService : TileService() {
                                     .setRoot(createTileLayout(
                                         titleText, formattedAmount, topLabel,
                                         expense1Name, expense1Amt,
-                                        expense2Name, expense2Amt
+                                        expense2Name, expense2Amt,
+                                        currencySymbol
                                     ))
                                     .build()
                             )
@@ -155,7 +178,8 @@ class VFinanceTileService : TileService() {
         exp1Name: String,
         exp1Amt: String,
         exp2Name: String,
-        exp2Amt: String
+        exp2Amt: String,
+        currencySymbol: String = "đ"
     ): LayoutElementBuilders.LayoutElement {
         val clickable = ModifiersBuilders.Clickable.Builder()
     .setId("open_app")
@@ -231,7 +255,7 @@ class VFinanceTileService : TileService() {
             .addContent(LayoutElementBuilders.Spacer.Builder().setHeight(dp(2f)).build())
             .addContent(
                 LayoutElementBuilders.Text.Builder()
-                    .setText(amount + " đ")
+                    .setText(if (currencySymbol == "$") "$" + amount else amount + " đ")
                     .setFontStyle(
                         LayoutElementBuilders.FontStyle.Builder()
                             .setSize(sp(24f))
@@ -254,7 +278,7 @@ class VFinanceTileService : TileService() {
             
             // First expense box
             if (exp1Name.isNotEmpty()) {
-                rowBuilder.addContent(createExpenseBox(exp1Name, exp1Amt))
+                rowBuilder.addContent(createExpenseBox(exp1Name, exp1Amt, currencySymbol))
             }
             
             // Spacer between boxes
@@ -264,7 +288,7 @@ class VFinanceTileService : TileService() {
             
             // Second expense box
             if (exp2Name.isNotEmpty()) {
-                rowBuilder.addContent(createExpenseBox(exp2Name, exp2Amt))
+                rowBuilder.addContent(createExpenseBox(exp2Name, exp2Amt, currencySymbol))
             }
             
             columnBuilder.addContent(rowBuilder.build())
@@ -280,7 +304,7 @@ class VFinanceTileService : TileService() {
             .build()
     }
     
-    private fun createExpenseBox(name: String, amount: String): LayoutElementBuilders.LayoutElement {
+    private fun createExpenseBox(name: String, amount: String, currencySymbol: String = "đ"): LayoutElementBuilders.LayoutElement {
         return LayoutElementBuilders.Box.Builder()
             .setWidth(dp(90f))
             .setHeight(dp(56f))
@@ -334,7 +358,7 @@ class VFinanceTileService : TileService() {
                     .addContent(LayoutElementBuilders.Spacer.Builder().setHeight(dp(3f)).build())
                     .addContent(
                         LayoutElementBuilders.Text.Builder()
-                            .setText(amount + " đ")
+                            .setText(if (currencySymbol == "$") "$" + amount else amount + " đ")
                             .setFontStyle(
                                 LayoutElementBuilders.FontStyle.Builder()
                                     .setSize(sp(11f))
@@ -366,20 +390,25 @@ class VFinanceTileService : TileService() {
     
     // Compact format for expense boxes
     // Vietnamese: T (tỷ=10^9), Tr (triệu=10^6), K (nghìn=10^3)
-    // English: T (trillion=10^12), B (billion=10^9), M (million=10^6), K (thousand=10^3)
-    private fun formatCompact(value: Long, language: String = "vi"): String {
-        val isEn = language == "en"
+    // English/USD: B (billion=10^9), M (million=10^6), K (thousand=10^3)
+    private fun formatCompact(value: Long, language: String = "vi", currency: String = "đ"): String {
+        val isEn = language == "en" || currency == "$"
+        val isUsd = currency == "$"
+        
+        // For USD, don't use K suffix for amounts under $10,000 - show exact number
+        if (isUsd && value < 10_000L) {
+            return formatWithDots(value.toDouble())
+        }
+        
         return when {
             // >= 1 trillion (10^12)
             value >= 1_000_000_000_000L -> {
                 val num = value / 1_000_000_000_000.0
                 if (isEn) {
-                    // English: T = trillion
-                    if (num >= 1000) formatWithDots(num / 1000) + "Q" // quadrillion
+                    if (num >= 1000) formatWithDots(num / 1000) + "Q"
                     else if (num >= 1) formatWithDots(num) + "T"
                     else String.format("%.1f", num).replace(".0", "") + "T"
                 } else {
-                    // Vietnamese: T = tỷ (10^9), so 10^12 = nghìn tỷ
                     val tyValue = value / 1_000_000_000.0
                     formatWithDots(tyValue) + "T"
                 }
@@ -388,10 +417,8 @@ class VFinanceTileService : TileService() {
             value >= 1_000_000_000L -> {
                 val num = value / 1_000_000_000.0
                 if (isEn) {
-                    // English: B = billion
                     formatWithDots(num) + "B"
                 } else {
-                    // Vietnamese: T = tỷ
                     formatWithDots(num) + "T"
                 }
             }

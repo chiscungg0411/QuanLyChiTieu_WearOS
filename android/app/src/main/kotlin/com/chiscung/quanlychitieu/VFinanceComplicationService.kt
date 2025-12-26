@@ -47,8 +47,20 @@ class VFinanceComplicationService : SuspendingComplicationDataSourceService() {
         val todayDate = java.text.SimpleDateFormat("dd/MM/yyyy", java.util.Locale.getDefault()).format(java.util.Date())
         val isDataFromToday = savedDate == todayDate
         
+        // Read currency and exchange rate settings
+        val currency = prefs.getString("flutter.app_currency", "đ") ?: "đ"
+        val exchangeRate = try {
+            prefs.getFloat("flutter.exchange_rate", 0.00004f).toDouble()
+        } catch (e: Exception) {
+            try {
+                java.lang.Double.longBitsToDouble(prefs.getLong("flutter.exchange_rate", 0L))
+            } catch (e2: Exception) {
+                0.00004
+            }
+        }
+        
         // Read today's total from SharedPreferences (reset to 0 if not from today)
-        val todayTotal = if (isDataFromToday) {
+        val todayTotalVnd = if (isDataFromToday) {
             try {
                 val totalStr = prefs.getString("flutter.tile_today_total", "0") ?: "0"
                 totalStr.toLongOrNull() ?: 0L
@@ -60,11 +72,18 @@ class VFinanceComplicationService : SuspendingComplicationDataSourceService() {
                 }
             }
         } else {
-            0L // Reset to 0 if data is not from today
+            0L
+        }
+        
+        // Convert to USD if currency is $
+        val todayTotal = if (currency == "$") {
+            (todayTotalVnd * exchangeRate).toLong()
+        } else {
+            todayTotalVnd
         }
         
         val language = prefs.getString("flutter.app_language", "vi") ?: "vi"
-        val formatted = formatCompactSplit(todayTotal, language)
+        val formatted = formatCompactSplit(todayTotal, language, currency)
         
         // Create tap action to open the app
         val intent = Intent(this, MainActivity::class.java).apply {
@@ -81,13 +100,17 @@ class VFinanceComplicationService : SuspendingComplicationDataSourceService() {
             ComplicationType.SHORT_TEXT -> {
                 val contentDesc = if (language == "vi") "Chi tiêu hôm nay" else "Today's spending"
                 
-                // For K suffix (< 1M): combine on same line like "350K"
+                // Add currency prefix
+                val currencyPrefix = if (currency == "$") "$" else ""
+                val currencySuffix = if (currency == "đ" && formatted.suffix.isEmpty()) "đ" else ""
+                
+                // For K suffix (< 1M): combine on same line like "350K" or "$1.245"
                 // For TR, T suffixes (>= 1M): two lines - number on top, suffix below
                 val isKSuffix = formatted.suffix == "K"
                 
                 val builder = if (isKSuffix || formatted.suffix.isEmpty()) {
-                    // Single line: combine number + suffix (e.g., "350K" or just the number)
-                    val singleLineText = formatted.number + formatted.suffix
+                    // Single line: combine number + suffix (e.g., "$1.245" or "350K")
+                    val singleLineText = currencyPrefix + formatted.number + formatted.suffix + currencySuffix
                     ShortTextComplicationData.Builder(
                         text = PlainComplicationText.Builder(singleLineText).build(),
                         contentDescription = PlainComplicationText.Builder(contentDesc).build()
@@ -97,7 +120,7 @@ class VFinanceComplicationService : SuspendingComplicationDataSourceService() {
                     ShortTextComplicationData.Builder(
                         text = PlainComplicationText.Builder(formatted.suffix).build(),
                         contentDescription = PlainComplicationText.Builder(contentDesc).build()
-                    ).setTitle(PlainComplicationText.Builder(formatted.number).build())
+                    ).setTitle(PlainComplicationText.Builder(currencyPrefix + formatted.number).build())
                 }
                 
                 builder.setMonochromaticImage(
@@ -121,8 +144,15 @@ class VFinanceComplicationService : SuspendingComplicationDataSourceService() {
     }
 
     // Split format: returns number and suffix separately
-    private fun formatCompactSplit(value: Long, language: String = "vi"): FormattedAmount {
-        val isEn = language == "en"
+    private fun formatCompactSplit(value: Long, language: String = "vi", currency: String = "đ"): FormattedAmount {
+        val isEn = language == "en" || currency == "$"
+        val isUsd = currency == "$"
+        
+        // For USD, don't use K suffix for amounts under $10,000 - show exact number
+        if (isUsd && value < 10_000L) {
+            return FormattedAmount(formatWithDots(value.toDouble()), "")
+        }
+        
         return when {
             value >= 1_000_000_000_000L -> {
                 val num = value / 1_000_000_000_000.0

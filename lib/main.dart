@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:flutter_native_splash/flutter_native_splash.dart';
+import 'package:http/http.dart' as http;
 
 
 // Global SharedPreferences instance for faster access
@@ -12,6 +13,15 @@ SharedPreferences? _prefs;
 // Global language setting - 'vi' for Vietnamese, 'en' for English
 String _appLanguage = 'vi';
 const String _keyLanguage = 'app_language';
+
+// Global currency setting - 'đ' for VND, '$' for USD
+String _appCurrency = 'đ';
+const String _keyCurrency = 'app_currency';
+
+// Global exchange rate (VND to USD) - default fallback rate
+double _exchangeRate = 0.00004; // ~1 USD = 25,000 VND
+const String _keyExchangeRate = 'exchange_rate';
+bool _isLoadingRate = false;
 
 // Cached regex for number formatting - avoid creating new RegExp on every call
 final RegExp _numberFormatRegex = RegExp(r'(\d{1,3})(?=(\d{3})+(?!\d))');
@@ -106,6 +116,57 @@ String getShortMonthName(int month) {
 }
 
 String getMonthKey(DateTime date) => '${date.month}/${date.year}';
+
+// =================== CURRENCY CONVERSION ===================
+
+// Fetch real-time exchange rate from ExchangeRate-API (free, no auth)
+Future<double> fetchExchangeRate() async {
+  try {
+    _isLoadingRate = true;
+    final response = await http.get(
+      Uri.parse('https://open.er-api.com/v6/latest/VND'),
+    ).timeout(const Duration(seconds: 10));
+    
+    if (response.statusCode == 200) {
+      final data = jsonDecode(response.body);
+      final usdRate = data['rates']['USD'];
+      if (usdRate != null) {
+        _exchangeRate = (usdRate as num).toDouble();
+        // Cache the rate
+        final prefs = _prefs ?? await SharedPreferences.getInstance();
+        await prefs.setDouble(_keyExchangeRate, _exchangeRate);
+      }
+    }
+  } catch (e) {
+    // Use cached or default rate on error
+    debugPrint('Exchange rate fetch failed: $e');
+  } finally {
+    _isLoadingRate = false;
+  }
+  return _exchangeRate;
+}
+
+// Convert VND amount to display value based on currency setting
+int convertAmount(int vndAmount) {
+  if (_appCurrency == 'đ') return vndAmount;
+  // Convert to USD - no rounding
+  return (vndAmount * _exchangeRate).toInt();
+}
+
+// Format amount with currency symbol - no rounding
+String formatAmountWithCurrency(int vndAmount) {
+  if (_appCurrency == 'đ') {
+    return '${dinhDangSo(vndAmount)} đ';
+  } else {
+    // Always show exact USD amount with 2 decimal places
+    final usdDouble = vndAmount * _exchangeRate;
+    if (usdDouble >= 1000) {
+      // For large amounts, show as whole number with comma separators
+      return '\$${dinhDangSo(usdDouble.toInt())}';
+    }
+    return '\$${usdDouble.toStringAsFixed(2)}';
+  }
+}
 
 // =================== CLOCK ===================
 
@@ -360,6 +421,18 @@ class _ChiTieuAppState extends State<ChiTieuApp> {
       _appLanguage = savedLanguage;
     }
     
+    // Load currency preference
+    final savedCurrency = prefs.getString(_keyCurrency);
+    if (savedCurrency != null) {
+      _appCurrency = savedCurrency;
+    }
+    
+    // Load cached exchange rate
+    final savedExchangeRate = prefs.getDouble(_keyExchangeRate);
+    if (savedExchangeRate != null) {
+      _exchangeRate = savedExchangeRate;
+    }
+    
     // Load _chiTheoMuc
     final chiTheoMucJson = prefs.getString(_keyChiTheoMuc);
     if (chiTheoMucJson != null) {
@@ -466,6 +539,8 @@ class _ChiTieuAppState extends State<ChiTieuApp> {
     await prefs.setString('tile_today_total', todayTotal.toString());
     await prefs.setString('tile_data_date', dinhDangNgayDayDu(_currentDay));
     await prefs.setString('app_language', _appLanguage);
+    await prefs.setString('app_currency', _appCurrency);
+    await prefs.setDouble('exchange_rate', _exchangeRate);
     await prefs.setString('tile_top_expenses', jsonEncode(top2));
     
     // Trigger complication update immediately
@@ -592,8 +667,11 @@ class _ChiTieuAppState extends State<ChiTieuApp> {
         MaterialPageRoute(
           builder: (_) => SettingsScreen(
             onLanguageChanged: () {
-              // Rebuild main app when language changes
-              if (mounted) setState(() {});
+              // Rebuild main app and save data when language/currency changes
+              if (mounted) {
+                setState(() {});
+                _saveData(); // Save data so Tile/Complication sync
+              }
             },
           ),
         ),
@@ -711,7 +789,7 @@ class _ChiTieuAppState extends State<ChiTieuApp> {
                                       child: FittedBox(
                                         fit: BoxFit.scaleDown,
                                         child: Text(
-                                          '${dinhDangSo(_tongHomNay)} đ',
+                                          formatAmountWithCurrency(_tongHomNay),
                                           style: const TextStyle(
                                             color: Color(0xFFF08080),
                                             fontSize: 20,
@@ -888,7 +966,7 @@ class _CategoryButton extends StatelessWidget {
               Padding(
                 padding: const EdgeInsets.symmetric(horizontal: 4),
                 child: Text(
-                  '${dinhDangSo(tongTien)} đ',
+                  formatAmountWithCurrency(tongTien),
                   style: const TextStyle(
                     color: Color(0xFFF08080),
                     fontSize: 10,
@@ -1072,7 +1150,7 @@ class _LichSuScreenState extends State<LichSuScreen> {
                                           child: FittedBox(
                                             fit: BoxFit.scaleDown,
                                             child: Text(
-                                              '${dinhDangSo(totalMonth)} đ',
+                                              formatAmountWithCurrency(totalMonth),
                                               style: const TextStyle(
                                                 color: Color(0xFFF08080),
                                                 fontWeight: FontWeight.bold,
@@ -1143,7 +1221,7 @@ class _LichSuScreenState extends State<LichSuScreen> {
                                                         fit: BoxFit.scaleDown,
                                                         alignment: Alignment.centerRight,
                                                         child: Text(
-                                                          '${dinhDangSo(dayTotal)} đ',
+                                                          formatAmountWithCurrency(dayTotal),
                                                           style: const TextStyle(
                                                             color: Color(0xFFF08080),
                                                             fontSize: 11,
@@ -1186,7 +1264,7 @@ class _LichSuScreenState extends State<LichSuScreen> {
                                                               fit: BoxFit.scaleDown,
                                                               alignment: Alignment.centerLeft,
                                                               child: Text(
-                                                                '${dinhDangSo(totalCat)} đ',
+                                                                formatAmountWithCurrency(totalCat),
                                                                 style: const TextStyle(
                                                                   color: Colors.white,
                                                                   fontSize: 12,
@@ -1200,7 +1278,7 @@ class _LichSuScreenState extends State<LichSuScreen> {
                                                       const SizedBox(height: 4),
                                                       ...entries.map((entry) {
                                                         final timeText = dinhDangGio(entry.item.thoiGian);
-                                                        final moneyText = '${dinhDangSo(entry.item.soTien)} đ';
+                                                        final moneyText = formatAmountWithCurrency(entry.item.soTien);
                                                         final tenChiTieu = entry.item.tenChiTieu;
                                                         final isKhac = entry.muc == ChiTieuMuc.khac && tenChiTieu != null;
                                                         
@@ -1518,7 +1596,7 @@ class _ChiTieuTheoMucScreenState extends State<ChiTieuTheoMucScreen> {
                         child: FittedBox(
                           fit: BoxFit.scaleDown,
                           child: Text(
-                            '${dinhDangSo(tongChi)} đ',
+                            formatAmountWithCurrency(tongChi),
                             style: const TextStyle(
                               color: Color(0xFFF08080),
                               fontSize: 24,
@@ -1556,7 +1634,7 @@ class _ChiTieuTheoMucScreenState extends State<ChiTieuTheoMucScreen> {
                                         fit: BoxFit.scaleDown,
                                         alignment: Alignment.centerRight,
                                         child: Text(
-                                          '${dinhDangSo(row.dailyTotal!)} đ',
+                                          formatAmountWithCurrency(row.dailyTotal!),
                                           style: const TextStyle(
                                             color: Colors.white70,
                                             fontSize: 12,
@@ -1572,7 +1650,7 @@ class _ChiTieuTheoMucScreenState extends State<ChiTieuTheoMucScreen> {
 
                             final item = row.item!;
                             final timeText = dinhDangGio(item.thoiGian);
-                            final moneyText = '${dinhDangSo(item.soTien)} đ';
+                            final moneyText = formatAmountWithCurrency(item.soTien);
                             final originalIndex = danhSachChi.indexOf(item);
 
                             return GestureDetector(
@@ -1750,7 +1828,7 @@ class XacNhanXoaScreen extends StatelessWidget {
                     FittedBox(
                       fit: BoxFit.scaleDown,
                       child: Text(
-                        '${dinhDangSo(soTien)} đ',
+                        formatAmountWithCurrency(soTien),
                         style: const TextStyle(
                           color: Color(0xFFF08080),
                           fontSize: 22,
@@ -1824,8 +1902,16 @@ class _NhapSoTienScreenState extends State<NhapSoTienScreen> {
     super.initState();
     _focusNode = FocusNode();
 
-    final initText =
-        widget.soTienBanDau != null ? widget.soTienBanDau.toString() : '';
+    String initText = '';
+    if (widget.soTienBanDau != null) {
+      if (_appCurrency == '\$') {
+        // Convert VND to USD for display
+        final usdAmount = widget.soTienBanDau! * _exchangeRate;
+        initText = usdAmount.toStringAsFixed(2);
+      } else {
+        initText = widget.soTienBanDau.toString();
+      }
+    }
     controller = TextEditingController(text: initText);
 
     controller.addListener(() {
@@ -1861,6 +1947,16 @@ class _NhapSoTienScreenState extends State<NhapSoTienScreen> {
     final text = controller.text.trim();
     if (text.isEmpty) return null;
     try {
+      if (_appCurrency == '\$') {
+        // USD mode: parse as double (allowing decimals) and convert to VND
+        final usdAmount = double.parse(text.replaceAll(',', '.'));
+        if (_exchangeRate > 0) {
+          // Convert USD back to VND for storage - no rounding
+          return (usdAmount / _exchangeRate).toInt();
+        }
+        return (usdAmount * 25000).toInt(); // Fallback rate
+      }
+      // VND mode: parse as integer directly
       return int.parse(text);
     } catch (_) {
       return null;
@@ -1897,21 +1993,31 @@ class _NhapSoTienScreenState extends State<NhapSoTienScreen> {
                     child: TextField(
                       focusNode: _focusNode,
                       controller: controller,
-                      keyboardType: TextInputType.number,
-                      inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+                      keyboardType: _appCurrency == '\$' 
+                          ? const TextInputType.numberWithOptions(decimal: true)
+                          : TextInputType.number,
+                      inputFormatters: _appCurrency == '\$'
+                          ? [FilteringTextInputFormatter.allow(RegExp(r'[0-9.,]'))]
+                          : [FilteringTextInputFormatter.digitsOnly],
                       style: const TextStyle(
                         color: Color(0xFFF08080),
                         fontSize: 28,
                         fontWeight: FontWeight.bold,
                       ),
                       textAlign: TextAlign.center,
-                      decoration: const InputDecoration(
+                      decoration: InputDecoration(
                         hintText: '0',
-                        hintStyle: TextStyle(color: Colors.white24),
-                        enabledBorder: UnderlineInputBorder(
+                        hintStyle: const TextStyle(color: Colors.white24),
+                        suffixText: _appCurrency == '\$' ? '\$' : 'đ',
+                        suffixStyle: const TextStyle(
+                          color: Color(0xFFF08080),
+                          fontSize: 20,
+                          fontWeight: FontWeight.bold,
+                        ),
+                        enabledBorder: const UnderlineInputBorder(
                           borderSide: BorderSide(color: Colors.white24),
                         ),
-                        focusedBorder: UnderlineInputBorder(
+                        focusedBorder: const UnderlineInputBorder(
                           borderSide: BorderSide(color: Color(0xFFF08080)),
                         ),
                       ),
@@ -2126,7 +2232,7 @@ class _KhacTheoMucScreenState extends State<KhacTheoMucScreen> {
                         child: FittedBox(
                           fit: BoxFit.scaleDown,
                           child: Text(
-                            '${dinhDangSo(tongChi)} đ',
+                            formatAmountWithCurrency(tongChi),
                             style: const TextStyle(
                               color: Color(0xFFF08080),
                               fontSize: 24,
@@ -2144,7 +2250,7 @@ class _KhacTheoMucScreenState extends State<KhacTheoMucScreen> {
                           itemBuilder: (context, index) {
                             final item = danhSachChi[index];
                             final timeText = dinhDangGio(item.thoiGian);
-                            final moneyText = '${dinhDangSo(item.soTien)} đ';
+                            final moneyText = formatAmountWithCurrency(item.soTien);
                             final tenChiTieu = item.tenChiTieu ?? 'Khoản chi khác';
 
                             return GestureDetector(
@@ -2350,7 +2456,7 @@ class XacNhanXoaKhacScreen extends StatelessWidget {
                     FittedBox(
                       fit: BoxFit.scaleDown,
                       child: Text(
-                        '${dinhDangSo(soTien)} đ',
+                        formatAmountWithCurrency(soTien),
                         style: const TextStyle(
                           color: Color(0xFFF08080),
                           fontSize: 20,
@@ -2591,11 +2697,15 @@ class SettingsScreen extends StatefulWidget {
 
 class _SettingsScreenState extends State<SettingsScreen> {
   late String _selectedLanguage;
+  late String _selectedCurrency;
+  bool _languageExpanded = false;
+  bool _currencyExpanded = false;
 
   @override
   void initState() {
     super.initState();
-    _selectedLanguage = _appLanguage; // Load from global state
+    _selectedLanguage = _appLanguage;
+    _selectedCurrency = _appCurrency;
   }
 
   Future<void> _setLanguage(String lang) async {
@@ -2603,17 +2713,47 @@ class _SettingsScreenState extends State<SettingsScreen> {
     
     setState(() {
       _selectedLanguage = lang;
+      _languageExpanded = false;
     });
     
-    // Update global language
     _appLanguage = lang;
-    
-    // Save to SharedPreferences
     final prefs = _prefs ?? await SharedPreferences.getInstance();
     await prefs.setString(_keyLanguage, lang);
-    
-    // Notify parent to rebuild
     widget.onLanguageChanged?.call();
+  }
+
+  Future<void> _setCurrency(String currency) async {
+    if (_selectedCurrency == currency) return;
+    
+    setState(() {
+      _selectedCurrency = currency;
+      _currencyExpanded = false;
+    });
+    
+    _appCurrency = currency;
+    final prefs = _prefs ?? await SharedPreferences.getInstance();
+    await prefs.setString(_keyCurrency, currency);
+    await prefs.setString('app_currency', currency); // Also save without prefix for Tile/Complication
+    await prefs.setDouble('exchange_rate', _exchangeRate);
+    
+    // Fetch exchange rate when switching to USD
+    if (currency == '\$') {
+      await fetchExchangeRate();
+      // Save new rate
+      await prefs.setDouble('exchange_rate', _exchangeRate);
+    }
+    
+    // First, refresh parent to update currency display AND save data
+    widget.onLanguageChanged?.call();
+    
+    // Small delay to ensure data is written before triggering update
+    await Future.delayed(const Duration(milliseconds: 100));
+    
+    // Then trigger complication update with fresh data
+    try {
+      const channel = MethodChannel('com.chiscung.quanlychitieu/complication');
+      await channel.invokeMethod('updateComplication');
+    } catch (_) {}
   }
 
   @override
@@ -2628,138 +2768,197 @@ class _SettingsScreenState extends State<SettingsScreen> {
           children: [
             const _WatchBackground(),
             Padding(
-              padding: const EdgeInsets.only(top: 32, bottom: 8),
+              padding: const EdgeInsets.only(top: 8, bottom: 8),
               child: ListView(
                 padding: const EdgeInsets.symmetric(horizontal: 16),
                 children: [
+                  // Real-time clock at top
+                  const SizedBox(height: 4),
+                  const ClockText(
+                    showSeconds: false,
+                    style: TextStyle(
+                      color: Colors.white70,
+                      fontSize: 14,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  
                   // Header
                   Row(
                     mainAxisAlignment: MainAxisAlignment.center,
                     children: [
-                      const Icon(Icons.settings_rounded, color: Colors.white, size: 18),
+                      const Icon(Icons.settings_rounded, color: Colors.white, size: 16),
                       const SizedBox(width: 6),
                       Text(
                         isVietnamese ? 'Cài đặt' : 'Settings',
                         style: const TextStyle(
                           color: Colors.white,
                           fontWeight: FontWeight.bold,
-                          fontSize: 16,
+                          fontSize: 14,
                         ),
                       ),
                     ],
                   ),
-                  const SizedBox(height: 16),
-                  
-                  // Language Section
-                  Container(
-                    padding: const EdgeInsets.all(12),
-                    decoration: BoxDecoration(
-                      color: Colors.white10,
-                      borderRadius: BorderRadius.circular(12),
-                    ),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Row(
-                          children: [
-                            const Icon(Icons.language_rounded, color: Colors.white70, size: 16),
-                            const SizedBox(width: 8),
-                            Text(
-                              isVietnamese ? 'Ngôn ngữ' : 'Language',
-                              style: const TextStyle(
-                                color: Colors.white,
-                                fontSize: 13,
-                                fontWeight: FontWeight.w600,
-                              ),
-                            ),
-                          ],
-                        ),
-                        const SizedBox(height: 10),
-                        Row(
-                          children: [
-                            // Vietnamese option
-                            Expanded(
-                              child: GestureDetector(
-                                onTap: () => _setLanguage('vi'),
-                                child: Container(
-                                  padding: const EdgeInsets.symmetric(vertical: 8),
-                                  decoration: BoxDecoration(
-                                    color: _selectedLanguage == 'vi' 
-                                        ? const Color(0xFF4CAF93).withOpacity(0.3) 
-                                        : Colors.white10,
-                                    borderRadius: BorderRadius.circular(8),
-                                    border: _selectedLanguage == 'vi'
-                                        ? Border.all(color: const Color(0xFF4CAF93), width: 1.5)
-                                        : null,
-                                  ),
-                                  child: Column(
-                                    children: [
-                                      const Text('🇻🇳', style: TextStyle(fontSize: 18)),
-                                      const SizedBox(height: 4),
-                                      Text(
-                                        'Tiếng Việt',
-                                        style: TextStyle(
-                                          color: _selectedLanguage == 'vi' 
-                                              ? const Color(0xFF4CAF93) 
-                                              : Colors.white70,
-                                          fontSize: 10,
-                                          fontWeight: _selectedLanguage == 'vi' 
-                                              ? FontWeight.w600 
-                                              : FontWeight.normal,
-                                        ),
-                                      ),
-                                    ],
-                                  ),
-                                ),
-                              ),
-                            ),
-                            const SizedBox(width: 8),
-                            // English option
-                            Expanded(
-                              child: GestureDetector(
-                                onTap: () => _setLanguage('en'),
-                                child: Container(
-                                  padding: const EdgeInsets.symmetric(vertical: 8),
-                                  decoration: BoxDecoration(
-                                    color: _selectedLanguage == 'en' 
-                                        ? const Color(0xFF4CAF93).withOpacity(0.3) 
-                                        : Colors.white10,
-                                    borderRadius: BorderRadius.circular(8),
-                                    border: _selectedLanguage == 'en'
-                                        ? Border.all(color: const Color(0xFF4CAF93), width: 1.5)
-                                        : null,
-                                  ),
-                                  child: Column(
-                                    children: [
-                                      const Text('🇺🇸', style: TextStyle(fontSize: 18)),
-                                      const SizedBox(height: 4),
-                                      Text(
-                                        'English',
-                                        style: TextStyle(
-                                          color: _selectedLanguage == 'en' 
-                                              ? const Color(0xFF4CAF93) 
-                                              : Colors.white70,
-                                          fontSize: 10,
-                                          fontWeight: _selectedLanguage == 'en' 
-                                              ? FontWeight.w600 
-                                              : FontWeight.normal,
-                                        ),
-                                      ),
-                                    ],
-                                  ),
-                                ),
-                              ),
-                            ),
-                          ],
-                        ),
-                      ],
-                    ),
-                  ),
                   const SizedBox(height: 12),
                   
-                  // QR Code Section
+                  // Language Section - Click to expand
+                  GestureDetector(
+                    onTap: () => setState(() {
+                      _languageExpanded = !_languageExpanded;
+                      if (_languageExpanded) _currencyExpanded = false;
+                    }),
+                    child: Container(
+                      padding: const EdgeInsets.all(10),
+                      decoration: BoxDecoration(
+                        color: Colors.white10,
+                        borderRadius: BorderRadius.circular(12),
+                        border: _languageExpanded 
+                            ? Border.all(color: const Color(0xFF4CAF93), width: 1)
+                            : null,
+                      ),
+                      child: Column(
+                        children: [
+                          Row(
+                            children: [
+                              const Icon(Icons.language_rounded, color: Colors.white70, size: 16),
+                              const SizedBox(width: 8),
+                              Expanded(
+                                child: Text(
+                                  isVietnamese ? 'Ngôn ngữ' : 'Language',
+                                  style: const TextStyle(
+                                    color: Colors.white,
+                                    fontSize: 12,
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                                ),
+                              ),
+                              Text(
+                                _selectedLanguage == 'vi' ? '🇻🇳 VI' : '🇺🇸 EN',
+                                style: const TextStyle(
+                                  color: Color(0xFF4CAF93),
+                                  fontSize: 11,
+                                  fontWeight: FontWeight.w600,
+                                ),
+                              ),
+                              const SizedBox(width: 4),
+                              Icon(
+                                _languageExpanded ? Icons.expand_less : Icons.expand_more,
+                                color: Colors.white54,
+                                size: 18,
+                              ),
+                            ],
+                          ),
+                          if (_languageExpanded) ...[
+                            const SizedBox(height: 10),
+                            Row(
+                              children: [
+                                Expanded(
+                                  child: _optionButton(
+                                    '🇻🇳',
+                                    'Tiếng Việt',
+                                    _selectedLanguage == 'vi',
+                                    () => _setLanguage('vi'),
+                                  ),
+                                ),
+                                const SizedBox(width: 8),
+                                Expanded(
+                                  child: _optionButton(
+                                    '🇺🇸',
+                                    'English',
+                                    _selectedLanguage == 'en',
+                                    () => _setLanguage('en'),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ],
+                        ],
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  
+                  // Currency Section - Click to expand
+                  GestureDetector(
+                    onTap: () => setState(() {
+                      _currencyExpanded = !_currencyExpanded;
+                      if (_currencyExpanded) _languageExpanded = false;
+                    }),
+                    child: Container(
+                      padding: const EdgeInsets.all(10),
+                      decoration: BoxDecoration(
+                        color: Colors.white10,
+                        borderRadius: BorderRadius.circular(12),
+                        border: _currencyExpanded 
+                            ? Border.all(color: const Color(0xFF4CAF93), width: 1)
+                            : null,
+                      ),
+                      child: Column(
+                        children: [
+                          Row(
+                            children: [
+                              const Icon(Icons.attach_money_rounded, color: Colors.white70, size: 16),
+                              const SizedBox(width: 8),
+                              Expanded(
+                                child: Text(
+                                  isVietnamese ? 'Tiền tệ' : 'Currency',
+                                  style: const TextStyle(
+                                    color: Colors.white,
+                                    fontSize: 12,
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                                ),
+                              ),
+                              Text(
+                                _selectedCurrency == 'đ' ? '₫ VND' : '\$ USD',
+                                style: const TextStyle(
+                                  color: Color(0xFF4CAF93),
+                                  fontSize: 11,
+                                  fontWeight: FontWeight.w600,
+                                ),
+                              ),
+                              const SizedBox(width: 4),
+                              Icon(
+                                _currencyExpanded ? Icons.expand_less : Icons.expand_more,
+                                color: Colors.white54,
+                                size: 18,
+                              ),
+                            ],
+                          ),
+                          if (_currencyExpanded) ...[
+                            const SizedBox(height: 10),
+                            Row(
+                              children: [
+                                Expanded(
+                                  child: _optionButton(
+                                    '₫',
+                                    'VND',
+                                    _selectedCurrency == 'đ',
+                                    () => _setCurrency('đ'),
+                                  ),
+                                ),
+                                const SizedBox(width: 8),
+                                Expanded(
+                                  child: _optionButton(
+                                    '\$',
+                                    'USD',
+                                    _selectedCurrency == '\$',
+                                    () => _setCurrency('\$'),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ],
+                        ],
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 10),
+                  
+                  // QR Code Section - Compact
                   Container(
-                    padding: const EdgeInsets.all(12),
+                    padding: const EdgeInsets.all(10),
                     decoration: BoxDecoration(
                       color: Colors.white10,
                       borderRadius: BorderRadius.circular(12),
@@ -2769,41 +2968,41 @@ class _SettingsScreenState extends State<SettingsScreen> {
                         Row(
                           mainAxisAlignment: MainAxisAlignment.center,
                           children: [
-                            const Icon(Icons.qr_code_rounded, color: Colors.white70, size: 16),
-                            const SizedBox(width: 8),
+                            const Icon(Icons.qr_code_rounded, color: Colors.white70, size: 14),
+                            const SizedBox(width: 6),
                             Text(
-                              isVietnamese ? 'Liên hệ tôi' : 'Contact Me',
+                              isVietnamese ? 'Liên hệ' : 'Contact',
                               style: const TextStyle(
                                 color: Colors.white,
-                                fontSize: 13,
+                                fontSize: 12,
                                 fontWeight: FontWeight.w600,
                               ),
                             ),
                           ],
                         ),
-                        const SizedBox(height: 10),
+                        const SizedBox(height: 8),
                         Container(
-                          padding: const EdgeInsets.all(6),
+                          padding: const EdgeInsets.all(4),
                           decoration: BoxDecoration(
                             color: Colors.white,
-                            borderRadius: BorderRadius.circular(10),
+                            borderRadius: BorderRadius.circular(8),
                           ),
                           child: ClipRRect(
-                            borderRadius: BorderRadius.circular(6),
+                            borderRadius: BorderRadius.circular(4),
                             child: Image.asset(
                               'assets/images/qr_code.png',
-                              width: 80,
-                              height: 80,
+                              width: 60,
+                              height: 60,
                               fit: BoxFit.contain,
                             ),
                           ),
                         ),
-                        const SizedBox(height: 8),
+                        const SizedBox(height: 6),
                         const Text(
                           'vochicuong.id.vn',
                           style: TextStyle(
                             color: Color(0xFF4CAF93),
-                            fontSize: 10,
+                            fontSize: 9,
                             fontWeight: FontWeight.w500,
                           ),
                         ),
@@ -2814,17 +3013,49 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 ],
               ),
             ),
-            // Back button on top of everything
+            // Back button
             Positioned(
-              top: 12,
+              top: 8,
               left: edge,
               child: IconButton(
                 icon: const Icon(
                   Icons.arrow_back_ios_new_rounded,
                   color: Colors.white70,
-                  size: 16,
+                  size: 14,
                 ),
                 onPressed: () => Navigator.pop(context),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _optionButton(String emoji, String label, bool selected, VoidCallback onTap) {
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        padding: const EdgeInsets.symmetric(vertical: 8),
+        decoration: BoxDecoration(
+          color: selected 
+              ? const Color(0xFF4CAF93).withOpacity(0.3) 
+              : Colors.white10,
+          borderRadius: BorderRadius.circular(8),
+          border: selected
+              ? Border.all(color: const Color(0xFF4CAF93), width: 1.5)
+              : null,
+        ),
+        child: Column(
+          children: [
+            Text(emoji, style: const TextStyle(fontSize: 16)),
+            const SizedBox(height: 2),
+            Text(
+              label,
+              style: TextStyle(
+                color: selected ? const Color(0xFF4CAF93) : Colors.white70,
+                fontSize: 10,
+                fontWeight: selected ? FontWeight.w600 : FontWeight.normal,
               ),
             ),
           ],
