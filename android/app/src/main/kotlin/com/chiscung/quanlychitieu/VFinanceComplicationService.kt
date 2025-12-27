@@ -187,9 +187,12 @@ class VFinanceComplicationService : SuspendingComplicationDataSourceService() {
                                  else String.format("%.1f", numM).replace(".0", "")
                     FormattedAmount(numStr, suffix)
                 } else {
-                    // Vietnamese: 72,459,000 -> 72,459TR
-                    val num = value / 1_000.0
-                    FormattedAmount(formatWithCommas(num), suffix)
+                    // Vietnamese: 1,000,000 -> 1tr, 1,005,000 -> 1,005tr
+                    val numM = value / 1_000_000.0
+                    val formatter = NumberFormat.getNumberInstance(Locale("vi", "VN"))
+                    formatter.maximumFractionDigits = 3
+                    formatter.minimumFractionDigits = 0
+                    FormattedAmount(formatter.format(numM), "tr")
                 }
             }
             value >= 1_000L -> {

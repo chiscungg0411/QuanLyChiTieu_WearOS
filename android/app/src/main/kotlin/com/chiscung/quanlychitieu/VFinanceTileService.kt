@@ -77,10 +77,48 @@ class VFinanceTileService : TileService() {
         val todayIncomeUsd = todayIncomeVnd * exchangeRate
         val todayIncome = if (currency == "$") todayIncomeUsd.toLong() else todayIncomeVnd
         
-        // Calculate remaining balance (income - expenses)
-        val remainingBalanceVnd = todayIncomeVnd - todayTotalVnd
-        val remainingBalanceUsd = todayIncomeUsd - todayTotalUsd
+        // Read monthly totals for remaining balance calculation (these persist across days)
+        val monthlyIncomeVnd = try {
+            val incomeStr = prefs.getString("flutter.tile_monthly_income", "0") ?: "0"
+            incomeStr.toLongOrNull() ?: 0L
+        } catch (e: Exception) {
+            0L
+        }
+        val monthlyExpenseVnd = try {
+            val expenseStr = prefs.getString("flutter.tile_monthly_expense", "0") ?: "0"
+            expenseStr.toLongOrNull() ?: 0L
+        } catch (e: Exception) {
+            0L
+        }
+        
+        // Read pre-calculated remaining balance directly from Flutter app (ensures exact match)
+        val remainingBalanceVnd = try {
+            val balanceStr = prefs.getString("flutter.tile_remaining_balance", "0") ?: "0"
+            balanceStr.toLongOrNull() ?: (monthlyIncomeVnd - monthlyExpenseVnd)
+        } catch (e: Exception) {
+            monthlyIncomeVnd - monthlyExpenseVnd
+        }
+        
+        // Read pre-calculated USD balance (Double)
+        val remainingBalanceUsd = try {
+            val usdStr = prefs.getString("flutter.tile_remaining_balance_usd", "0") ?: "0"
+            usdStr.toDoubleOrNull() ?: (remainingBalanceVnd * exchangeRate)
+        } catch (e: Exception) {
+            remainingBalanceVnd * exchangeRate
+        }
+        
+        // Read monthly expense USD
+        val monthlyExpenseUsd = try {
+            val expenseUsdStr = prefs.getString("flutter.tile_monthly_expense_usd", "0") ?: "0"
+            expenseUsdStr.toDoubleOrNull() ?: 0.0
+        } catch (e: Exception) {
+            0.0
+        }
+        
         val remainingBalance = if (currency == "$") remainingBalanceUsd.toLong() else remainingBalanceVnd
+        
+        // Determine monthly expense for display
+        val monthlyExpenseDisplay = if (currency == "$") monthlyExpenseUsd else monthlyExpenseVnd.toDouble()
         
         val language = prefs.getString("flutter.app_language", "vi") ?: "vi"
         val topExpensesJson = if (isDataFromToday) {
@@ -121,9 +159,12 @@ class VFinanceTileService : TileService() {
         
         val formattedAmount = formatCompact(todayTotal, language, currency, todayTotalUsd)
         val formattedRemaining = formatCompact(kotlin.math.abs(remainingBalance), language, currency, kotlin.math.abs(if (currency == "$") remainingBalanceUsd else remainingBalanceVnd.toDouble()))
+        val formattedMonthlyExpense = formatCompact(monthlyExpenseDisplay.toLong(), language, currency, monthlyExpenseUsd)
+        
         val currencySymbol = if (currency == "$") "$" else "đ"
         val titleText = if (language == "vi") "Tổng chi tiêu hôm nay" else "Total spending today"
         val topLabel = if (language == "vi") "Chi tiêu lớn nhất" else "Top spending"
+        val monthlyLabel = if (language == "vi") "Tổng chi tháng:" else "Total monthly spending:"
         
         val tile = TileBuilders.Tile.Builder()
             .setResourcesVersion(RESOURCES_VERSION)
@@ -138,7 +179,8 @@ class VFinanceTileService : TileService() {
                                         titleText, formattedAmount, formattedRemaining, remainingBalance >= 0, topLabel,
                                         expense1Name, expense1Amt,
                                         expense2Name, expense2Amt,
-                                        currencySymbol
+                                        currencySymbol,
+                                        monthlyLabel, formattedMonthlyExpense
                                     ))
                                     .build()
                             )
@@ -199,7 +241,9 @@ class VFinanceTileService : TileService() {
         exp1Amt: String,
         exp2Name: String,
         exp2Amt: String,
-        currencySymbol: String = "đ"
+        currencySymbol: String = "đ",
+        monthlyLabel: String = "",
+        monthlyAmount: String = ""
     ): LayoutElementBuilders.LayoutElement {
         val clickable = ModifiersBuilders.Clickable.Builder()
     .setId("open_app")
@@ -289,7 +333,7 @@ class VFinanceTileService : TileService() {
             .addContent(
                 LayoutElementBuilders.Text.Builder()
                     .setText(
-                        (if (isPositive) "+" else "-") + 
+                        (if (isPositive) "" else "-") + 
                         (if (currencySymbol == "$") "$" + remainingAmount else remainingAmount + " đ")
                     )
                     .setFontStyle(
@@ -329,6 +373,20 @@ class VFinanceTileService : TileService() {
             
             columnBuilder.addContent(rowBuilder.build())
         }
+
+        // Add monthly spending at the bottom
+        columnBuilder.addContent(LayoutElementBuilders.Spacer.Builder().setHeight(dp(4f)).build())
+        columnBuilder.addContent(
+            LayoutElementBuilders.Text.Builder()
+                .setText("$monthlyLabel $monthlyAmount" + if (currencySymbol == "$") "" else " đ")
+                .setFontStyle(
+                    LayoutElementBuilders.FontStyle.Builder()
+                        .setSize(sp(12f))
+                        .setColor(argb(0xFFB0BEC5.toInt()))
+                        .build()
+                )
+                .build()
+        )
 
         return LayoutElementBuilders.Box.Builder()
             .setWidth(dp(210f))
@@ -481,8 +539,12 @@ class VFinanceTileService : TileService() {
                     if (numM >= 100) formatWithCommas(numM) + suffix
                     else String.format("%.1f", numM).replace(".0", "") + suffix
                 } else {
-                    // Vietnamese: 72,459,000 -> 72,459Tr
-                    formatWithCommas(num) + suffix
+                    // Vietnamese: 1,000,000 -> 1tr, 1,005,000 -> 1,005tr
+                    val numM = value / 1_000_000.0
+                    val formatter = NumberFormat.getNumberInstance(Locale("vi", "VN"))
+                    formatter.maximumFractionDigits = 3
+                    formatter.minimumFractionDigits = 0
+                    formatter.format(numM) + "tr"
                 }
             }
             // >= 1 thousand (10^3)

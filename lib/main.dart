@@ -136,6 +136,14 @@ Future<double> fetchExchangeRate() async {
         // Cache the rate
         final prefs = _prefs ?? await SharedPreferences.getInstance();
         await prefs.setDouble(_keyExchangeRate, _exchangeRate);
+        
+        // Trigger Tile update immediately with new rate
+        try {
+          const channel = MethodChannel('com.chiscung.quanlychitieu/complication');
+          await channel.invokeMethod('updateComplication');
+        } catch (e) {
+          debugPrint('Error updating tile after rate fetch: $e');
+        }
       }
     }
   } catch (e) {
@@ -452,6 +460,14 @@ class _ChiTieuAppState extends State<ChiTieuApp> {
       _exchangeRate = savedExchangeRate;
     }
     
+    // Always fetch latest rate in background to keep it fresh
+    fetchExchangeRate().then((rate) {
+      if (mounted) {
+        setState(() {});
+        _saveData(); // Save with new rate so Tile gets updated USD amount
+      }
+    });
+    
     // Load _chiTheoMuc (including soDu for income tracking)
     final chiTheoMucJson = prefs.getString(_keyChiTheoMuc);
     if (chiTheoMucJson != null) {
@@ -570,6 +586,40 @@ class _ChiTieuAppState extends State<ChiTieuApp> {
     await prefs.setString('app_currency', _appCurrency);
     await prefs.setDouble('exchange_rate', _exchangeRate);
     await prefs.setString('tile_top_expenses', jsonEncode(top2));
+    
+    // Calculate and save monthly totals for Tile remaining balance
+    final currentMonthKey = getMonthKey(_currentDay);
+    final todayDayKey = dinhDangNgayDayDu(_currentDay);
+    
+    // Start with today's values
+    int monthlyIncome = todayIncome;
+    int monthlyExpense = todayTotal;
+    
+    // Add historical data from current month
+    final currentMonthData = _lichSuThang[currentMonthKey];
+    if (currentMonthData != null) {
+      for (final dayEntry in currentMonthData.entries) {
+        if (dayEntry.key == todayDayKey) continue; // Skip today (already counted)
+        for (final entry in dayEntry.value) {
+          if (entry.muc == ChiTieuMuc.soDu) {
+            monthlyIncome += entry.item.soTien;
+          } else {
+            monthlyExpense += entry.item.soTien;
+          }
+        }
+      }
+    }
+    
+    // Save monthly totals and remaining balance for Tile
+    final remainingBalance = monthlyIncome - monthlyExpense;
+    final remainingBalanceUsd = remainingBalance * _exchangeRate;
+    final monthlyExpenseUsd = monthlyExpense * _exchangeRate;
+    
+    await prefs.setString('tile_monthly_income', monthlyIncome.toString());
+    await prefs.setString('tile_monthly_expense', monthlyExpense.toString());
+    await prefs.setString('tile_monthly_expense_usd', monthlyExpenseUsd.toString());
+    await prefs.setString('tile_remaining_balance', remainingBalance.toString());
+    await prefs.setString('tile_remaining_balance_usd', remainingBalanceUsd.toString());
     
     // Trigger complication update immediately
     try {
@@ -866,8 +916,25 @@ class _ChiTieuAppState extends State<ChiTieuApp> {
                                     ),
                                   ),
                                 ),
-                                // Show remaining balance only if user has income
-                                if (_tongMuc(ChiTieuMuc.soDu) > 0) ...[
+                                // Show remaining balance if user has any income in current month
+                                if (() {
+                                  // Check today's income
+                                  int totalIncome = (_chiTheoMuc[ChiTieuMuc.soDu] ?? <ChiTieuItem>[])
+                                      .where((item) => _sameDay(item.thoiGian, _currentDay))
+                                      .fold(0, (sum, item) => sum + item.soTien);
+                                  if (totalIncome > 0) return true;
+                                  // Check historical income in current month
+                                  final currentMonthKey = getMonthKey(_currentDay);
+                                  final currentMonthData = _lichSuThang[currentMonthKey];
+                                  if (currentMonthData != null) {
+                                    for (final dayEntry in currentMonthData.values) {
+                                      for (final entry in dayEntry) {
+                                        if (entry.muc == ChiTieuMuc.soDu) return true;
+                                      }
+                                    }
+                                  }
+                                  return false;
+                                }()) ...[
                                   SizedBox(height: 2 * (1.0 - progress * 0.5)),
                                   Opacity(
                                     opacity: headerOpacity.clamp(0.0, 1.0),
@@ -1007,8 +1074,9 @@ class _ChiTieuAppState extends State<ChiTieuApp> {
                           if (muc == ChiTieuMuc.lichSu || muc == ChiTieuMuc.caiDat) {
                             displayAmount = 0;
                           } else if (muc == ChiTieuMuc.soDu) {
-                            // Show total income entered
+                            // Show today's income only (resets to 0 on new day)
                             displayAmount = (_chiTheoMuc[ChiTieuMuc.soDu] ?? <ChiTieuItem>[])
+                                .where((item) => _sameDay(item.thoiGian, _currentDay))
                                 .fold(0, (sum, item) => sum + item.soTien);
                           } else {
                             displayAmount = _tongMuc(muc);

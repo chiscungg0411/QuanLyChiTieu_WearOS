@@ -5,6 +5,7 @@ import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
 import androidx.wear.watchface.complications.datasource.ComplicationDataSourceUpdateRequester
+import androidx.wear.tiles.TileService
 
 class MainActivity : FlutterActivity() {
     private val CHANNEL = "com.chiscung.quanlychitieu/complication"
@@ -16,11 +17,18 @@ class MainActivity : FlutterActivity() {
             when (call.method) {
                 "updateComplication" -> {
                     try {
+                        // Update Complication
                         val requester = ComplicationDataSourceUpdateRequester.create(
                             applicationContext,
                             ComponentName(applicationContext, VFinanceComplicationService::class.java)
                         )
                         requester.requestUpdateAll()
+                        
+                        // Also update Tile
+                        TileService.getUpdater(applicationContext).requestUpdate(
+                            VFinanceTileService::class.java
+                        )
+                        
                         result.success(true)
                     } catch (e: Exception) {
                         result.error("UPDATE_ERROR", e.message, null)
@@ -31,3 +39,4 @@ class MainActivity : FlutterActivity() {
         }
     }
 }
+
