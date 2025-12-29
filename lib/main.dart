@@ -6,6 +6,9 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:flutter_native_splash/flutter_native_splash.dart';
 import 'package:http/http.dart' as http;
 import 'package:package_info_plus/package_info_plus.dart';
+import 'package:firebase_core/firebase_core.dart';
+import 'services/auth_service.dart';
+import 'screens/login_screen.dart';
 
 
 // Global SharedPreferences instance for faster access
@@ -13,6 +16,7 @@ SharedPreferences? _prefs;
 
 // Global language setting - 'vi' for Vietnamese, 'en' for English
 String _appLanguage = 'vi';
+String get appLanguage => _appLanguage;
 const String _keyLanguage = 'app_language';
 
 // Global currency setting - 'đ' for VND, '$' for USD
@@ -38,22 +42,90 @@ final ThemeData _appTheme = ThemeData(
   ),
 );
 
-void main() {
+void main() async {
   // Preserve splash screen while app initializes
   WidgetsBinding widgetsBinding = WidgetsFlutterBinding.ensureInitialized();
   FlutterNativeSplash.preserve(widgetsBinding: widgetsBinding);
   
+  // Initialize Firebase
+  await Firebase.initializeApp();
+  
   // Start SharedPreferences loading in background (non-blocking)
   SharedPreferences.getInstance().then((prefs) => _prefs = prefs);
   
-  runApp(
-    MaterialApp(
+  runApp(const VFinanceWearApp());
+}
+
+class VFinanceWearApp extends StatelessWidget {
+  const VFinanceWearApp({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return MaterialApp(
       debugShowCheckedModeBanner: false,
       title: 'VFinance',
       theme: _appTheme,
-      home: const ChiTieuApp(),
-    ),
-  );
+      home: const AuthWrapper(),
+    );
+  }
+}
+
+class AuthWrapper extends StatefulWidget {
+  const AuthWrapper({super.key});
+
+  @override
+  State<AuthWrapper> createState() => _AuthWrapperState();
+}
+
+class _AuthWrapperState extends State<AuthWrapper> {
+  bool _showLogin = true;
+  bool _initialized = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _checkAuthState();
+  }
+
+  Future<void> _checkAuthState() async {
+    final prefs = _prefs ?? await SharedPreferences.getInstance();
+    final skippedLogin = prefs.getBool('skipped_login') ?? false;
+    
+    if (authService.currentUser != null || skippedLogin) {
+      _showLogin = false;
+    }
+    
+    setState(() => _initialized = true);
+    FlutterNativeSplash.remove();
+  }
+
+  void _onLoginSuccess() {
+    setState(() => _showLogin = false);
+  }
+
+  void _onSkip() async {
+    final prefs = _prefs ?? await SharedPreferences.getInstance();
+    await prefs.setBool('skipped_login', true);
+    setState(() => _showLogin = false);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (!_initialized) {
+      return const Scaffold(
+        body: Center(child: CircularProgressIndicator()),
+      );
+    }
+
+    if (_showLogin) {
+      return LoginScreen(
+        onLoginSuccess: _onLoginSuccess,
+        onSkip: _onSkip,
+      );
+    }
+
+    return const ChiTieuApp();
+  }
 }
 
 // =================== UTILS ===================
@@ -3861,6 +3933,98 @@ class _SettingsScreenState extends State<SettingsScreen> {
                             fontWeight: FontWeight.w500,
                           ),
                         ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+                  // Account Section
+                  Container(
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: Colors.white10,
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    child: Column(
+                      children: [
+                        Row(
+                          children: [
+                            Icon(
+                              authService.currentUser != null ? Icons.person : Icons.login,
+                              color: Colors.white70,
+                              size: 14,
+                            ),
+                            const SizedBox(width: 6),
+                            Text(
+                              isVietnamese ? 'Tài khoản' : 'Account',
+                              style: const TextStyle(
+                                color: Colors.white,
+                                fontSize: 12,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 8),
+                        if (authService.currentUser != null) ...[
+                          // Logged in - show user info and logout
+                          Text(
+                            authService.currentUser?.email ?? '',
+                            style: const TextStyle(color: Colors.white70, fontSize: 9),
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                          const SizedBox(height: 8),
+                          GestureDetector(
+                            onTap: () async {
+                              await authService.signOut();
+                              final prefs = _prefs ?? await SharedPreferences.getInstance();
+                              await prefs.setBool('skipped_login', false);
+                              if (context.mounted) {
+                                Navigator.of(context).pushAndRemoveUntil(
+                                  MaterialPageRoute(builder: (_) => const AuthWrapper()),
+                                  (route) => false,
+                                );
+                              }
+                            },
+                            child: Container(
+                              padding: const EdgeInsets.symmetric(vertical: 6, horizontal: 12),
+                              decoration: BoxDecoration(
+                                color: Colors.red.withOpacity(0.3),
+                                borderRadius: BorderRadius.circular(8),
+                                border: Border.all(color: Colors.red, width: 1),
+                              ),
+                              child: Text(
+                                isVietnamese ? 'Đăng xuất' : 'Sign Out',
+                                style: const TextStyle(color: Colors.red, fontSize: 10, fontWeight: FontWeight.w600),
+                              ),
+                            ),
+                          ),
+                        ] else ...[
+                          // Not logged in - show login button
+                          GestureDetector(
+                            onTap: () async {
+                              final prefs = _prefs ?? await SharedPreferences.getInstance();
+                              await prefs.setBool('skipped_login', false);
+                              if (context.mounted) {
+                                Navigator.of(context).pushAndRemoveUntil(
+                                  MaterialPageRoute(builder: (_) => const AuthWrapper()),
+                                  (route) => false,
+                                );
+                              }
+                            },
+                            child: Container(
+                              padding: const EdgeInsets.symmetric(vertical: 6, horizontal: 12),
+                              decoration: BoxDecoration(
+                                color: const Color(0xFF4CAF93).withOpacity(0.3),
+                                borderRadius: BorderRadius.circular(8),
+                                border: Border.all(color: const Color(0xFF4CAF93), width: 1),
+                              ),
+                              child: Text(
+                                isVietnamese ? 'Đăng nhập' : 'Sign In',
+                                style: const TextStyle(color: Color(0xFF4CAF93), fontSize: 10, fontWeight: FontWeight.w600),
+                              ),
+                            ),
+                          ),
+                        ],
                       ],
                     ),
                   ),
