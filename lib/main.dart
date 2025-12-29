@@ -7,7 +7,9 @@ import 'package:flutter_native_splash/flutter_native_splash.dart';
 import 'package:http/http.dart' as http;
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:firebase_core/firebase_core.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
 import 'services/auth_service.dart';
+import 'services/transaction_service.dart'; // Cloud First: Firestore as source of truth
 import 'screens/login_screen.dart';
 
 
@@ -90,6 +92,13 @@ class _AuthWrapperState extends State<AuthWrapper> {
   Future<void> _checkAuthState() async {
     final prefs = _prefs ?? await SharedPreferences.getInstance();
     final skippedLogin = prefs.getBool('skipped_login') ?? false;
+    
+    // Try to recover session if not logged in
+    if (authService.currentUser == null && !skippedLogin) {
+      try {
+        await authService.signInWithGoogle();
+      } catch (_) {}
+    }
     
     if (authService.currentUser != null || skippedLogin) {
       _showLogin = false;
@@ -330,18 +339,21 @@ class _ClockTextState extends State<ClockText> {
 // =================== MODEL ===================
 
 class ChiTieuItem {
+  final String? id;
   final int soTien;
   final DateTime thoiGian;
   final String? tenChiTieu; // Optional expense name for khac category
 
   ChiTieuItem({
+    this.id,
     required this.soTien,
     required this.thoiGian,
     this.tenChiTieu,
   });
 
-  ChiTieuItem copyWith({int? soTien, DateTime? thoiGian, String? tenChiTieu}) {
+  ChiTieuItem copyWith({String? id, int? soTien, DateTime? thoiGian, String? tenChiTieu}) {
     return ChiTieuItem(
+      id: id ?? this.id,
       soTien: soTien ?? this.soTien,
       thoiGian: thoiGian ?? this.thoiGian,
       tenChiTieu: tenChiTieu ?? this.tenChiTieu,
@@ -467,6 +479,10 @@ class _ChiTieuAppState extends State<ChiTieuApp> {
   int? _cachedTongHomNay;
   final Map<ChiTieuMuc, int> _cachedTongMuc = {};
   Timer? _dayCheckTimer;
+  StreamSubscription<List<TransactionDoc>>? _transactionsSub; // Cloud First: listen to Firestore
+  StreamSubscription? _authStateSub; // Listen to auth state changes
+  bool _isApplyingCloudData = false; // Flag to prevent sync loops
+  DateTime? _lastCloudSyncTime; // Track last sync time
 
   static DateTime _asDate(DateTime dt) => DateTime(dt.year, dt.month, dt.day);
 
@@ -501,11 +517,138 @@ class _ChiTieuAppState extends State<ChiTieuApp> {
       _loadData();
     });
     _dayCheckTimer = Timer.periodic(const Duration(minutes: 1), (_) => _checkNewDay());
+    
+    // Cloud First: Subscribe to Firestore when user logs in
+    _setupFirestoreSubscription();
+    
+    // Listen to auth state changes to re-subscribe when user logs in/out
+    _authStateSub = authService.authStateChanges.listen((_) {
+      _setupFirestoreSubscription();
+    });
+  }
+  
+  /// Setup or teardown Firestore subscription based on auth state
+  void _setupFirestoreSubscription() {
+    debugPrint('[WearOS App] _setupFirestoreSubscription called, isLoggedIn=${transactionService.isLoggedIn}');
+    _transactionsSub?.cancel();
+    _transactionsSub = null;
+    
+    if (transactionService.isLoggedIn) {
+      debugPrint('[WearOS App] Subscribing to transactionsStream...');
+      _transactionsSub = transactionService.transactionsStream.listen(_onTransactionsChanged);
+    }
+  }
+  
+  bool _firstSync = true;
+  
+  /// Cloud First: Called when Firestore transactions change (from any device)
+  void _onTransactionsChanged(List<TransactionDoc> transactions) async {
+    // AUTO-MIGRATION: Smart Merge
+    // If we have local data that is NOT in the cloud, upload it.
+    if (_firstSync) {
+      int localCount = 0;
+      for (var list in _chiTheoMuc.values) localCount += list.length;
+      _lichSuThang.forEach((_, days) => days.forEach((_, items) => localCount += items.length));
+      
+      if (localCount > 0) {
+        debugPrint('Checking compatibility of $localCount local items with ${transactions.length} cloud items...');
+        
+        final batch = FirebaseFirestore.instance.batch();
+        final userParams = authService.currentUser;
+        if (userParams == null) return;
+        
+        final baseRef = FirebaseFirestore.instance.collection('users').doc(userParams.uid).collection('transactions');
+        int itemsToUpload = 0;
+        
+        // Helper to check and add
+        void checkAndAdd(String muc, ChiTieuItem item) {
+           // Fuzzy match: Same amount, category, and time within 60 seconds
+           final exists = transactions.any((tx) => 
+              tx.soTien == item.soTien && 
+              tx.muc == muc && 
+              tx.thoiGian.difference(item.thoiGian).inSeconds.abs() <= 60
+           );
+           
+           if (!exists) {
+             final doc = baseRef.doc();
+             batch.set(doc, {
+               'muc': muc,
+               'soTien': item.soTien,
+               'thoiGian': Timestamp.fromDate(item.thoiGian),
+               'updatedAt': FieldValue.serverTimestamp(),
+             });
+             itemsToUpload++;
+           }
+        }
+
+        // 1. Current Month items
+        _chiTheoMuc.forEach((muc, items) {
+           for (var item in items) checkAndAdd(muc.name, item);
+        });
+
+        // 2. History items
+        _lichSuThang.forEach((_, days) {
+           days.forEach((_, entries) {
+              for (var entry in entries) checkAndAdd(entry.muc.name, entry.item);
+           });
+        });
+
+        if (itemsToUpload > 0) {
+          debugPrint('Smart Merge: Uploading $itemsToUpload missing local items to Cloud...');
+          try {
+            _firstSync = false; // Prevent loop
+            await batch.commit();
+            debugPrint('Smart Merge successful!');
+            return; // Stream will fire again with new merged data
+          } catch (e) {
+            debugPrint('Smart Merge failed: $e');
+          }
+        } else {
+           debugPrint('Smart Merge: All local items already in cloud.');
+        }
+      }
+    }
+    _firstSync = false;
+
+    // Standard Sync: Rebuild _chiTheoMuc from Firestore data
+    for (final muc in ChiTieuMuc.values) {
+      if (muc == ChiTieuMuc.lichSu || muc == ChiTieuMuc.caiDat) continue;
+      _chiTheoMuc[muc] = <ChiTieuItem>[];
+    }
+    _lichSuThang.clear();
+    
+    for (final tx in transactions) {
+      try {
+        final muc = ChiTieuMuc.values.firstWhere((m) => m.name == tx.muc);
+        final item = ChiTieuItem(
+          id: tx.id,
+          soTien: tx.soTien, 
+          thoiGian: tx.thoiGian, 
+          tenChiTieu: tx.ghiChu,
+        );
+        
+        if (_sameDay(item.thoiGian, _currentDay)) {
+          _chiTheoMuc[muc]!.add(item);
+        } else {
+          // Add to history
+          final monthKey = getMonthKey(item.thoiGian);
+          final dayKey = dinhDangNgayDayDu(item.thoiGian);
+          _lichSuThang.putIfAbsent(monthKey, () => {});
+          _lichSuThang[monthKey]!.putIfAbsent(dayKey, () => []);
+          _lichSuThang[monthKey]![dayKey]!.add(HistoryEntry(muc: muc, item: item));
+        }
+      } catch (_) {}
+    }
+    
+    _invalidateCache();
+    if (mounted) setState(() {});
   }
 
   @override
   void dispose() {
     _dayCheckTimer?.cancel();
+    _transactionsSub?.cancel(); // Cloud First: cancel Firestore subscription
+    _authStateSub?.cancel(); // Cancel auth state listener
     _scrollAnimController.dispose();
     super.dispose();
   }
@@ -580,6 +723,7 @@ class _ChiTieuAppState extends State<ChiTieuApp> {
     }
     
     _invalidateCache();
+    
     if (mounted) {
       setState(() {
         _isLoading = false;
@@ -587,6 +731,43 @@ class _ChiTieuAppState extends State<ChiTieuApp> {
       // Remove splash screen now that app is ready
       FlutterNativeSplash.remove();
     }
+  }
+  
+  /// One-time migration of local SharedPreferences data to Firestore
+  Future<void> _migrateLocalDataToCloud(SharedPreferences prefs) async {
+    const migrationKey = 'data_migrated_to_cloud';
+    final alreadyMigrated = prefs.getBool(migrationKey) ?? false;
+    if (alreadyMigrated) return;
+    
+    // Collect all local transactions
+    final List<Map<String, dynamic>> allTransactions = [];
+    
+    // Add current day transactions
+    for (final muc in ChiTieuMuc.values) {
+      if (muc == ChiTieuMuc.lichSu || muc == ChiTieuMuc.caiDat) continue;
+      for (final item in _chiTheoMuc[muc] ?? <ChiTieuItem>[]) {
+        allTransactions.add({
+          ...item.toJson(),
+          'muc': muc.name,
+        });
+      }
+    }
+    
+    // Add historical transactions
+    for (final monthData in _lichSuThang.values) {
+      for (final dayEntries in monthData.values) {
+        for (final entry in dayEntries) {
+          allTransactions.add({
+            ...entry.item.toJson(),
+            'muc': entry.muc.name,
+          });
+        }
+      }
+    }
+    
+    // Note: Migration functionality has been moved to transactionService
+    // Mark as migrated
+    await prefs.setBool(migrationKey, true);
   }
 
   // Save data to SharedPreferences (uses pre-cached instance)
@@ -700,6 +881,51 @@ class _ChiTieuAppState extends State<ChiTieuApp> {
     } catch (_) {
       // Ignore errors - complication may not be active
     }
+    
+    // Auto-sync to Firestore if user is logged in and NOT currently applying cloud data
+    if (authService.currentUser != null && !_isApplyingCloudData) {
+      _syncToFirestore();
+    }
+  }
+  
+  /// Sync current data to Firestore (fire-and-forget)
+  void _syncToFirestore() {
+    // Collect all current transactions and push to cloud
+    final List<Map<String, dynamic>> allData = [];
+    
+    for (final muc in ChiTieuMuc.values) {
+      if (muc == ChiTieuMuc.lichSu || muc == ChiTieuMuc.caiDat) continue;
+      for (final item in _chiTheoMuc[muc] ?? <ChiTieuItem>[]) {
+        allData.add({
+          ...item.toJson(),
+          'muc': muc.name,
+        });
+      }
+    }
+    
+    for (final monthData in _lichSuThang.values) {
+      for (final dayEntries in monthData.values) {
+        for (final entry in dayEntries) {
+          allData.add({
+            ...entry.item.toJson(),
+            'muc': entry.muc.name,
+          });
+        }
+      }
+    }
+    
+    // Use existing backup method for full sync
+    authService.backupData({
+      'transactions': allData,
+      'settings': {
+        'language': _appLanguage,
+        'currency': _appCurrency,
+        'exchangeRate': _exchangeRate,
+      },
+    });
+    
+    // Update last sync time to prevent re-applying our own data
+    _lastCloudSyncTime = DateTime.now();
   }
 
   void _checkNewDay() {
@@ -926,7 +1152,36 @@ class _ChiTieuAppState extends State<ChiTieuApp> {
                   children: [
                     // Fixed clock at top - not affected by scroll
                     const SizedBox(height: 4),
-                    const ClockText(showSeconds: false),
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        // Sync Status Indicator
+                        GestureDetector(
+                          onTap: () {
+                             if (!transactionService.isLoggedIn) {
+                               authService.signInWithGoogle().then((_) => setState(() {}));
+                             } else {
+                               // Show currently logged in email and Project ID
+                               final email = authService.currentUser?.email ?? 'Unknown';
+                               final projectId = Firebase.app().options.projectId;
+                               ScaffoldMessenger.of(context).showSnackBar(
+                                 SnackBar(
+                                   content: Text('User: $email\nProject: $projectId', style: const TextStyle(fontSize: 10)),
+                                   duration: const Duration(seconds: 4),
+                                 ),
+                               );
+                             }
+                          },
+                          child: Icon(
+                            transactionService.isLoggedIn ? Icons.cloud_done : Icons.cloud_off,
+                            size: 14,
+                            color: transactionService.isLoggedIn ? const Color(0xFF4CAF50) : const Color(0xFFE57373),
+                          ),
+                        ),
+                        const SizedBox(width: 4),
+                        const ClockText(showSeconds: false),
+                      ],
+                    ),
                     // Animated header that collapses on scroll (without clock)
                     ListenableBuilder(
                       listenable: _scrollAnimController,
@@ -1365,12 +1620,22 @@ class _SoDuScreenState extends State<SoDuScreen> {
     );
 
     if (soTien != null && soTien > 0) {
+      final now = DateTime.now();
       setState(() {
         danhSachThuNhap.add(
-          ChiTieuItem(soTien: soTien, thoiGian: DateTime.now()),
+          ChiTieuItem(soTien: soTien, thoiGian: now),
         );
         widget.onDataChanged?.call(danhSachThuNhap);
       });
+      
+      // Cloud First: Sync to Firestore
+      if (transactionService.isLoggedIn) {
+        transactionService.add(
+          muc: ChiTieuMuc.soDu.name,
+          soTien: soTien,
+          thoiGian: now,
+        );
+      }
     }
   }
 
@@ -1420,6 +1685,10 @@ class _SoDuScreenState extends State<SoDuScreen> {
 
     if (dongY == true) {
       setState(() {
+        final item = danhSachThuNhap[index];
+        if (item.id != null) {
+          transactionService.delete(item.id!);
+        }
         danhSachThuNhap.removeAt(index);
         if (danhSachThuNhap.isEmpty) {
           dangChonXoa = false;
@@ -1893,13 +2162,9 @@ class _LichSuScreenState extends State<LichSuScreen> {
                                                 FittedBox(
                                                   fit: BoxFit.scaleDown,
                                                   child: Text(
-                                                    monthlyRemaining >= 0
-                                                        ? formatAmountWithCurrency(monthlyRemaining)
-                                                        : '-${formatAmountWithCurrency(monthlyRemaining.abs())}',
-                                                    style: TextStyle(
-                                                      color: monthlyRemaining >= 0
-                                                          ? const Color(0xFF4CAF93)
-                                                          : const Color(0xFFE57373),
+                                                    formatAmountWithCurrency(incomeMonth),
+                                                    style: const TextStyle(
+                                                      color: Color(0xFF4CAF93),
                                                       fontWeight: FontWeight.w600,
                                                       fontSize: 10,
                                                     ),
@@ -2263,12 +2528,22 @@ class _ChiTieuTheoMucScreenState extends State<ChiTieuTheoMucScreen> {
     );
 
     if (soTien != null && soTien > 0) {
+      final now = DateTime.now();
       setState(() {
         danhSachChi.add(
-          ChiTieuItem(soTien: soTien, thoiGian: DateTime.now()),
+          ChiTieuItem(soTien: soTien, thoiGian: now),
         );
         widget.onDataChanged?.call(danhSachChi);
       });
+      
+      // Cloud First: Sync to Firestore
+      if (transactionService.isLoggedIn) {
+        transactionService.add(
+          muc: widget.muc.name,
+          soTien: soTien,
+          thoiGian: now,
+        );
+      }
     }
   }
 
@@ -2318,6 +2593,10 @@ class _ChiTieuTheoMucScreenState extends State<ChiTieuTheoMucScreen> {
 
     if (dongY == true) {
       setState(() {
+        final item = danhSachChi[index];
+        if (item.id != null) {
+          transactionService.delete(item.id!);
+        }
         danhSachChi.removeAt(index);
         if (danhSachChi.isEmpty) {
           dangChonXoa = false;
@@ -2900,16 +3179,30 @@ class _KhacTheoMucScreenState extends State<KhacTheoMucScreen> {
     );
 
     if (result != null) {
+      final now = DateTime.now();
+      final soTien = result['soTien'] as int;
+      final tenChiTieu = result['tenChiTieu'] as String;
+      
       setState(() {
         danhSachChi.add(
           ChiTieuItem(
-            soTien: result['soTien'] as int,
-            thoiGian: DateTime.now(),
-            tenChiTieu: result['tenChiTieu'] as String,
+            soTien: soTien,
+            thoiGian: now,
+            tenChiTieu: tenChiTieu,
           ),
         );
         widget.onDataChanged?.call(danhSachChi);
       });
+      
+      // Cloud First: Sync to Firestore
+      if (transactionService.isLoggedIn) {
+        transactionService.add(
+          muc: ChiTieuMuc.khac.name,
+          soTien: soTien,
+          thoiGian: now,
+          ghiChu: tenChiTieu,
+        );
+      }
     }
   }
 
@@ -2965,6 +3258,10 @@ class _KhacTheoMucScreenState extends State<KhacTheoMucScreen> {
 
     if (dongY == true) {
       setState(() {
+        final item = danhSachChi[index];
+        if (item.id != null) {
+          transactionService.delete(item.id!);
+        }
         danhSachChi.removeAt(index);
         if (danhSachChi.isEmpty) {
           dangChonXoa = false;
@@ -3618,6 +3915,190 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     ],
                   ),
                   const SizedBox(height: 12),
+
+                  // Account Section (Moved to Top)
+                  Container(
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: Colors.white10,
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    child: Column(
+                      children: [
+                        Row(
+                          children: [
+                            Icon(
+                              authService.currentUser != null ? Icons.person : Icons.login,
+                              color: Colors.white70,
+                              size: 14,
+                            ),
+                            const SizedBox(width: 6),
+                            Text(
+                              isVietnamese ? 'Tài khoản' : 'Account',
+                              style: const TextStyle(
+                                color: Colors.white,
+                                fontSize: 12,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 8),
+                        if (authService.currentUser != null) ...[
+                          // Logged in - show user info and logout
+                          Text(
+                            authService.currentUser?.email ?? '',
+                            style: const TextStyle(color: Colors.white70, fontSize: 9),
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                          const SizedBox(height: 8),
+                          // Backup button
+                          Row(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              GestureDetector(
+                                onTap: () async {
+                                  ScaffoldMessenger.of(context).showSnackBar(
+                                    SnackBar(content: Text(isVietnamese ? 'Đang sao lưu...' : 'Backing up...')),
+                                  );
+                                  // Get all SharedPreferences data
+                                  final prefs = _prefs ?? await SharedPreferences.getInstance();
+                                  final keys = prefs.getKeys();
+                                  final Map<String, dynamic> allData = {};
+                                  for (final key in keys) {
+                                    allData[key] = prefs.get(key);
+                                  }
+                                  await authService.backupData(allData);
+                                  if (context.mounted) {
+                                    ScaffoldMessenger.of(context).showSnackBar(
+                                      SnackBar(content: Text(isVietnamese ? '✓ Đã sao lưu!' : '✓ Backed up!')),
+                                    );
+                                  }
+                                },
+                                child: Container(
+                                  padding: const EdgeInsets.symmetric(vertical: 4, horizontal: 8),
+                                  decoration: BoxDecoration(
+                                    color: Colors.blue.withOpacity(0.3),
+                                    borderRadius: BorderRadius.circular(6),
+                                  ),
+                                  child: Row(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      const Icon(Icons.cloud_upload, color: Colors.blue, size: 12),
+                                      const SizedBox(width: 4),
+                                      Text(isVietnamese ? 'Lưu' : 'Backup', style: const TextStyle(color: Colors.blue, fontSize: 9)),
+                                    ],
+                                  ),
+                                ),
+                              ),
+                              const SizedBox(width: 8),
+                              GestureDetector(
+                                onTap: () async {
+                                  ScaffoldMessenger.of(context).showSnackBar(
+                                    SnackBar(content: Text(isVietnamese ? 'Đang khôi phục...' : 'Restoring...')),
+                                  );
+                                  final data = await authService.restoreData();
+                                  if (data != null) {
+                                    final prefs = _prefs ?? await SharedPreferences.getInstance();
+                                    for (final entry in data.entries) {
+                                      if (entry.value is String) {
+                                        await prefs.setString(entry.key, entry.value);
+                                      } else if (entry.value is int) {
+                                        await prefs.setInt(entry.key, entry.value);
+                                      } else if (entry.value is double) {
+                                        await prefs.setDouble(entry.key, entry.value);
+                                      } else if (entry.value is bool) {
+                                        await prefs.setBool(entry.key, entry.value);
+                                      }
+                                    }
+                                    if (context.mounted) {
+                                      ScaffoldMessenger.of(context).showSnackBar(
+                                        SnackBar(content: Text(isVietnamese ? '✓ Đã khôi phục! Khởi động lại app.' : '✓ Restored! Restart app.')),
+                                      );
+                                    }
+                                  } else {
+                                    if (context.mounted) {
+                                      ScaffoldMessenger.of(context).showSnackBar(
+                                        SnackBar(content: Text(isVietnamese ? 'Không có dữ liệu' : 'No data found')),
+                                      );
+                                    }
+                                  }
+                                },
+                                child: Container(
+                                  padding: const EdgeInsets.symmetric(vertical: 4, horizontal: 8),
+                                  decoration: BoxDecoration(
+                                    color: Colors.green.withOpacity(0.3),
+                                    borderRadius: BorderRadius.circular(6),
+                                  ),
+                                  child: Row(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      const Icon(Icons.cloud_download, color: Colors.green, size: 12),
+                                      const SizedBox(width: 4),
+                                      Text(isVietnamese ? 'Phục hồi' : 'Restore', style: const TextStyle(color: Colors.green, fontSize: 9)),
+                                    ],
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 8),
+                          GestureDetector(
+                            onTap: () async {
+                              await authService.signOut();
+                              final prefs = _prefs ?? await SharedPreferences.getInstance();
+                              await prefs.setBool('skipped_login', false);
+                              if (context.mounted) {
+                                Navigator.of(context).pushAndRemoveUntil(
+                                  MaterialPageRoute(builder: (_) => const AuthWrapper()),
+                                  (route) => false,
+                                );
+                              }
+                            },
+                            child: Container(
+                              padding: const EdgeInsets.symmetric(vertical: 6, horizontal: 12),
+                              decoration: BoxDecoration(
+                                color: Colors.red.withOpacity(0.3),
+                                borderRadius: BorderRadius.circular(8),
+                                border: Border.all(color: Colors.red, width: 1),
+                              ),
+                              child: Text(
+                                isVietnamese ? 'Đăng xuất' : 'Sign Out',
+                                style: const TextStyle(color: Colors.red, fontSize: 10, fontWeight: FontWeight.w600),
+                              ),
+                            ),
+                          ),
+                        ] else ...[
+                          // Not logged in - show login button
+                          GestureDetector(
+                            onTap: () async {
+                              final prefs = _prefs ?? await SharedPreferences.getInstance();
+                              await prefs.setBool('skipped_login', false);
+                              if (context.mounted) {
+                                Navigator.of(context).pushAndRemoveUntil(
+                                  MaterialPageRoute(builder: (_) => const AuthWrapper()),
+                                  (route) => false,
+                                );
+                              }
+                            },
+                            child: Container(
+                              padding: const EdgeInsets.symmetric(vertical: 6, horizontal: 12),
+                              decoration: BoxDecoration(
+                                color: const Color(0xFF4CAF93).withOpacity(0.3),
+                                borderRadius: BorderRadius.circular(8),
+                                border: Border.all(color: const Color(0xFF4CAF93), width: 1),
+                              ),
+                              child: Text(
+                                isVietnamese ? 'Đăng nhập' : 'Sign In',
+                                style: const TextStyle(color: Color(0xFF4CAF93), fontSize: 10, fontWeight: FontWeight.w600),
+                              ),
+                            ),
+                          ),
+                        ],
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: 8),
                   
                   // Language Section - Click to expand
                   GestureDetector(
@@ -3936,98 +4417,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                       ],
                     ),
                   ),
-                  const SizedBox(height: 16),
-                  // Account Section
-                  Container(
-                    padding: const EdgeInsets.all(12),
-                    decoration: BoxDecoration(
-                      color: Colors.white10,
-                      borderRadius: BorderRadius.circular(12),
-                    ),
-                    child: Column(
-                      children: [
-                        Row(
-                          children: [
-                            Icon(
-                              authService.currentUser != null ? Icons.person : Icons.login,
-                              color: Colors.white70,
-                              size: 14,
-                            ),
-                            const SizedBox(width: 6),
-                            Text(
-                              isVietnamese ? 'Tài khoản' : 'Account',
-                              style: const TextStyle(
-                                color: Colors.white,
-                                fontSize: 12,
-                                fontWeight: FontWeight.w600,
-                              ),
-                            ),
-                          ],
-                        ),
-                        const SizedBox(height: 8),
-                        if (authService.currentUser != null) ...[
-                          // Logged in - show user info and logout
-                          Text(
-                            authService.currentUser?.email ?? '',
-                            style: const TextStyle(color: Colors.white70, fontSize: 9),
-                            overflow: TextOverflow.ellipsis,
-                          ),
-                          const SizedBox(height: 8),
-                          GestureDetector(
-                            onTap: () async {
-                              await authService.signOut();
-                              final prefs = _prefs ?? await SharedPreferences.getInstance();
-                              await prefs.setBool('skipped_login', false);
-                              if (context.mounted) {
-                                Navigator.of(context).pushAndRemoveUntil(
-                                  MaterialPageRoute(builder: (_) => const AuthWrapper()),
-                                  (route) => false,
-                                );
-                              }
-                            },
-                            child: Container(
-                              padding: const EdgeInsets.symmetric(vertical: 6, horizontal: 12),
-                              decoration: BoxDecoration(
-                                color: Colors.red.withOpacity(0.3),
-                                borderRadius: BorderRadius.circular(8),
-                                border: Border.all(color: Colors.red, width: 1),
-                              ),
-                              child: Text(
-                                isVietnamese ? 'Đăng xuất' : 'Sign Out',
-                                style: const TextStyle(color: Colors.red, fontSize: 10, fontWeight: FontWeight.w600),
-                              ),
-                            ),
-                          ),
-                        ] else ...[
-                          // Not logged in - show login button
-                          GestureDetector(
-                            onTap: () async {
-                              final prefs = _prefs ?? await SharedPreferences.getInstance();
-                              await prefs.setBool('skipped_login', false);
-                              if (context.mounted) {
-                                Navigator.of(context).pushAndRemoveUntil(
-                                  MaterialPageRoute(builder: (_) => const AuthWrapper()),
-                                  (route) => false,
-                                );
-                              }
-                            },
-                            child: Container(
-                              padding: const EdgeInsets.symmetric(vertical: 6, horizontal: 12),
-                              decoration: BoxDecoration(
-                                color: const Color(0xFF4CAF93).withOpacity(0.3),
-                                borderRadius: BorderRadius.circular(8),
-                                border: Border.all(color: const Color(0xFF4CAF93), width: 1),
-                              ),
-                              child: Text(
-                                isVietnamese ? 'Đăng nhập' : 'Sign In',
-                                style: const TextStyle(color: Color(0xFF4CAF93), fontSize: 10, fontWeight: FontWeight.w600),
-                              ),
-                            ),
-                          ),
-                        ],
-                      ],
-                    ),
-                  ),
+                  // Account Section (Moved to top)
                   const SizedBox(height: 16),
                 ],
               ),

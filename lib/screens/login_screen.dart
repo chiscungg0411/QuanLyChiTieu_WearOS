@@ -29,11 +29,13 @@ class _LoginScreenState extends State<LoginScreen> {
     } else {
       if (mounted) {
         setState(() => _isLoading = false);
+        // Show detailed error message for debugging
+        final errorMsg = authService.lastError ?? 
+            (appLanguage == 'vi' ? 'Đăng nhập thất bại' : 'Sign in failed');
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text(appLanguage == 'vi' 
-                ? 'Đăng nhập thất bại'
-                : 'Sign in failed'),
+            content: Text(errorMsg, style: const TextStyle(fontSize: 10)),
+            duration: const Duration(seconds: 5),
           ),
         );
       }
@@ -59,28 +61,29 @@ class _LoginScreenState extends State<LoginScreen> {
             children: [
               // Logo
               Container(
-                width: 60,
-                height: 60,
+                width: 50,
+                height: 50,
                 decoration: BoxDecoration(
                   color: Colors.white,
-                  borderRadius: BorderRadius.circular(15),
+                  borderRadius: BorderRadius.circular(12),
                 ),
                 child: ClipRRect(
-                  borderRadius: BorderRadius.circular(15),
+                  borderRadius: BorderRadius.circular(12),
                   child: Image.asset('assets/icon/app_icon.png', fit: BoxFit.cover),
                 ),
               ),
-              const SizedBox(height: 12),
+              const SizedBox(height: 6),
               // App Name
               const Text(
                 'VFinance',
                 style: TextStyle(
-                  fontSize: 20,
+                  fontSize: 18,
                   fontWeight: FontWeight.bold,
                   color: Colors.white,
+                  letterSpacing: 0.5,
                 ),
               ),
-              const SizedBox(height: 20),
+              const SizedBox(height: 12),
               // Google Sign-In Button
               if (_isLoading)
                 const CircularProgressIndicator(color: Colors.white)
@@ -92,24 +95,25 @@ class _LoginScreenState extends State<LoginScreen> {
                       style: ElevatedButton.styleFrom(
                         backgroundColor: Colors.white,
                         foregroundColor: Colors.black87,
-                        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
                         shape: RoundedRectangleBorder(
                           borderRadius: BorderRadius.circular(20),
                         ),
+                        minimumSize: const Size(0, 36),
                       ),
                       child: Row(
                         mainAxisSize: MainAxisSize.min,
                         children: [
-                          const Icon(Icons.g_mobiledata, size: 20),
+                          const Icon(Icons.g_mobiledata, size: 24),
                           const SizedBox(width: 4),
                           Text(
                             appLanguage == 'vi' ? 'Google' : 'Google',
-                            style: const TextStyle(fontSize: 12),
+                            style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600),
                           ),
                         ],
                       ),
                     ),
-                    const SizedBox(height: 8),
+                    const SizedBox(height: 4),
                     if (widget.onSkip != null)
                       TextButton(
                         onPressed: widget.onSkip,
