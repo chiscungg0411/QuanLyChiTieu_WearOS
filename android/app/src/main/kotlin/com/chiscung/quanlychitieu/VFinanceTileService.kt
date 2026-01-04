@@ -32,7 +32,7 @@ class VFinanceTileService : TileService() {
         val isDataFromToday = savedDate == todayDate
         
         // Read currency and exchange rate settings
-        val currency = prefs.getString("flutter.app_currency", "đ") ?: "đ"
+        val currency = prefs.getString("flutter.app_currency", "₫") ?: "₫"
         val exchangeRate = try {
             // Try to read as Float first (might be stored as Float)
             prefs.getFloat("flutter.exchange_rate", 0.00004f).toDouble()
@@ -161,7 +161,7 @@ class VFinanceTileService : TileService() {
         val formattedRemaining = formatCompact(kotlin.math.abs(remainingBalance), language, currency, kotlin.math.abs(if (currency == "$") remainingBalanceUsd else remainingBalanceVnd.toDouble()))
         val formattedMonthlyExpense = formatCompact(monthlyExpenseDisplay.toLong(), language, currency, monthlyExpenseUsd)
         
-        val currencySymbol = if (currency == "$") "$" else "đ"
+        val currencySymbol = if (currency == "$") "$" else "₫"
         val titleText = if (language == "vi") "Tổng chi tiêu hôm nay" else "Total spending today"
         val topLabel = if (language == "vi") "Chi tiêu lớn nhất" else "Top spending"
         val monthlyLabel = if (language == "vi") "Tổng chi tháng:" else "Total monthly spending:"
@@ -241,7 +241,7 @@ class VFinanceTileService : TileService() {
         exp1Amt: String,
         exp2Name: String,
         exp2Amt: String,
-        currencySymbol: String = "đ",
+        currencySymbol: String = "₫",
         monthlyLabel: String = "",
         monthlyAmount: String = ""
     ): LayoutElementBuilders.LayoutElement {
@@ -319,7 +319,7 @@ class VFinanceTileService : TileService() {
             .addContent(LayoutElementBuilders.Spacer.Builder().setHeight(dp(2f)).build())
             .addContent(
                 LayoutElementBuilders.Text.Builder()
-                    .setText(if (currencySymbol == "$") "$" + amount else amount + " đ")
+                    .setText(if (currencySymbol == "$") "$" + amount else amount + " ₫")
                     .setFontStyle(
                         LayoutElementBuilders.FontStyle.Builder()
                             .setSize(sp(24f))
@@ -334,7 +334,7 @@ class VFinanceTileService : TileService() {
                 LayoutElementBuilders.Text.Builder()
                     .setText(
                         (if (isPositive) "" else "-") + 
-                        (if (currencySymbol == "$") "$" + remainingAmount else remainingAmount + " đ")
+                        (if (currencySymbol == "$") "$" + remainingAmount else remainingAmount + " ₫")
                     )
                     .setFontStyle(
                         LayoutElementBuilders.FontStyle.Builder()
@@ -378,7 +378,7 @@ class VFinanceTileService : TileService() {
         columnBuilder.addContent(LayoutElementBuilders.Spacer.Builder().setHeight(dp(4f)).build())
         columnBuilder.addContent(
             LayoutElementBuilders.Text.Builder()
-                .setText("$monthlyLabel $monthlyAmount" + if (currencySymbol == "$") "" else " đ")
+                .setText("$monthlyLabel $monthlyAmount" + if (currencySymbol == "$") "" else " ₫")
                 .setFontStyle(
                     LayoutElementBuilders.FontStyle.Builder()
                         .setSize(sp(12f))
@@ -398,7 +398,7 @@ class VFinanceTileService : TileService() {
             .build()
     }
     
-    private fun createExpenseBox(name: String, amount: String, currencySymbol: String = "đ"): LayoutElementBuilders.LayoutElement {
+    private fun createExpenseBox(name: String, amount: String, currencySymbol: String = "₫"): LayoutElementBuilders.LayoutElement {
         return LayoutElementBuilders.Box.Builder()
             .setWidth(dp(90f))
             .setHeight(dp(56f))
@@ -452,7 +452,7 @@ class VFinanceTileService : TileService() {
                     .addContent(LayoutElementBuilders.Spacer.Builder().setHeight(dp(3f)).build())
                     .addContent(
                         LayoutElementBuilders.Text.Builder()
-                            .setText(if (currencySymbol == "$") "$" + amount else amount + " đ")
+                            .setText(if (currencySymbol == "$") "$" + amount else amount + " ₫")
                             .setFontStyle(
                                 LayoutElementBuilders.FontStyle.Builder()
                                     .setSize(sp(11f))
@@ -496,7 +496,7 @@ class VFinanceTileService : TileService() {
     // Compact format for expense boxes
     // Vietnamese: T (tỷ=10^9), Tr (triệu=10^6), K (nghìn=10^3)
     // English/USD: B (billion=10^9), M (million=10^6), K (thousand=10^3)
-    private fun formatCompact(value: Long, language: String = "vi", currency: String = "đ", usdAmount: Double = 0.0): String {
+    private fun formatCompact(value: Long, language: String = "vi", currency: String = "₫", usdAmount: Double = 0.0): String {
         val isEn = language == "en" || currency == "$"
         val isUsd = currency == "$"
         

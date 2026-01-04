@@ -21,15 +21,6 @@ String _appLanguage = 'vi';
 String get appLanguage => _appLanguage;
 const String _keyLanguage = 'app_language';
 
-// Global currency setting - 'đ' for VND, '$' for USD
-String _appCurrency = 'đ';
-const String _keyCurrency = 'app_currency';
-
-// Global exchange rate (VND to USD) - default fallback rate
-double _exchangeRate = 0.00004; // ~1 USD = 25,000 VND
-const String _keyExchangeRate = 'exchange_rate';
-bool _isLoadingRate = false;
-
 // Cached regex for number formatting - avoid creating new RegExp on every call
 final RegExp _numberFormatRegex = RegExp(r'(\d{1,3})(?=(\d{3})+(?!\d))');
 
@@ -199,77 +190,11 @@ String getShortMonthName(int month) {
 
 String getMonthKey(DateTime date) => '${date.month}/${date.year}';
 
-// =================== CURRENCY CONVERSION ===================
+// =================== FORMATTING ===================
 
-// Fetch real-time exchange rate from ExchangeRate-API (free, no auth)
-Future<double> fetchExchangeRate() async {
-  try {
-    _isLoadingRate = true;
-    final response = await http.get(
-      Uri.parse('https://open.er-api.com/v6/latest/VND'),
-    ).timeout(const Duration(seconds: 10));
-    
-    if (response.statusCode == 200) {
-      final data = jsonDecode(response.body);
-      final usdRate = data['rates']['USD'];
-      if (usdRate != null) {
-        _exchangeRate = (usdRate as num).toDouble();
-        // Cache the rate
-        final prefs = _prefs ?? await SharedPreferences.getInstance();
-        await prefs.setDouble(_keyExchangeRate, _exchangeRate);
-        
-        // Trigger Tile update immediately with new rate
-        try {
-          const channel = MethodChannel('com.chiscung.quanlychitieu/complication');
-          await channel.invokeMethod('updateComplication');
-        } catch (e) {
-          debugPrint('Error updating tile after rate fetch: $e');
-        }
-      }
-    }
-  } catch (e) {
-    // Use cached or default rate on error
-    debugPrint('Exchange rate fetch failed: $e');
-  } finally {
-    _isLoadingRate = false;
-  }
-  return _exchangeRate;
-}
-
-// Convert VND amount to display value based on currency setting
-int convertAmount(int vndAmount) {
-  if (_appCurrency == 'đ') return vndAmount;
-  // Convert to USD - no rounding
-  return (vndAmount * _exchangeRate).toInt();
-}
-
-// Format amount with currency symbol - no rounding
+// Format amount with currency symbol (VND only)
 String formatAmountWithCurrency(int vndAmount) {
-  if (_appCurrency == 'đ') {
-    return '${dinhDangSo(vndAmount)} đ';
-  } else {
-    // Always show exact USD amount with 2 decimal places and comma separators
-    final usdDouble = vndAmount * _exchangeRate;
-    return '\$${_formatUsdWithCommas(usdDouble)}';
-  }
-}
-
-// Format USD with commas as thousand separators and 2 decimal places (e.g., 2,294.69)
-String _formatUsdWithCommas(double amount) {
-  // Split into integer and decimal parts
-  final intPart = amount.truncate();
-  final decimalPart = ((amount - intPart) * 100).round();
-  
-  // Format integer part with commas
-  final intStr = intPart.toString().replaceAllMapped(
-    _numberFormatRegex,
-    (m) => '${m[1]},',
-  );
-  
-  // Format decimal part with leading zero if needed
-  final decStr = decimalPart.toString().padLeft(2, '0');
-  
-  return '$intStr.$decStr';
+  return '${dinhDangSo(vndAmount)} ₫';
 }
 
 // =================== CLOCK ===================
@@ -535,6 +460,19 @@ class _ChiTieuAppState extends State<ChiTieuApp> {
     
     if (transactionService.isLoggedIn) {
       debugPrint('[WearOS App] Subscribing to transactionsStream...');
+      
+      // Clear SharedPreferences transaction data to ensure Firestore is the only source
+      final prefs = _prefs;
+      if (prefs != null) {
+        prefs.remove(_keyChiTheoMuc);
+        prefs.remove(_keyLichSuThang);
+      } else {
+        SharedPreferences.getInstance().then((p) {
+          p.remove(_keyChiTheoMuc);
+          p.remove(_keyLichSuThang);
+        });
+      }
+      
       _transactionsSub = transactionService.transactionsStream.listen(_onTransactionsChanged);
     }
   }
@@ -663,63 +601,47 @@ class _ChiTieuAppState extends State<ChiTieuApp> {
       _appLanguage = savedLanguage;
     }
     
-    // Load currency preference
-    final savedCurrency = prefs.getString(_keyCurrency);
-    if (savedCurrency != null) {
-      _appCurrency = savedCurrency;
-    }
-    
-    // Load cached exchange rate
-    final savedExchangeRate = prefs.getDouble(_keyExchangeRate);
-    if (savedExchangeRate != null) {
-      _exchangeRate = savedExchangeRate;
-    }
-    
-    // Always fetch latest rate in background to keep it fresh
-    fetchExchangeRate().then((rate) {
-      if (mounted) {
-        setState(() {});
-        _saveData(); // Save with new rate so Tile gets updated USD amount
+    // Cloud First: Only load transaction data from SharedPreferences for guest mode
+    // When logged in, Firestore is the single source of truth
+    if (!transactionService.isLoggedIn) {
+      // Load _chiTheoMuc (including soDu for income tracking)
+      final chiTheoMucJson = prefs.getString(_keyChiTheoMuc);
+      if (chiTheoMucJson != null) {
+        try {
+          final Map<String, dynamic> decoded = jsonDecode(chiTheoMucJson);
+          for (final muc in ChiTieuMuc.values) {
+            if (muc == ChiTieuMuc.lichSu || muc == ChiTieuMuc.caiDat) continue;
+            final mucName = muc.name;
+            if (decoded.containsKey(mucName)) {
+              final List<dynamic> items = decoded[mucName];
+              _chiTheoMuc[muc] = items
+                  .map((e) => ChiTieuItem.fromJson(e as Map<String, dynamic>))
+                  .toList();
+            }
+          }
+        } catch (_) {}
       }
-    });
-    
-    // Load _chiTheoMuc (including soDu for income tracking)
-    final chiTheoMucJson = prefs.getString(_keyChiTheoMuc);
-    if (chiTheoMucJson != null) {
-      try {
-        final Map<String, dynamic> decoded = jsonDecode(chiTheoMucJson);
-        for (final muc in ChiTieuMuc.values) {
-          if (muc == ChiTieuMuc.lichSu || muc == ChiTieuMuc.caiDat) continue;
-          final mucName = muc.name;
-          if (decoded.containsKey(mucName)) {
-            final List<dynamic> items = decoded[mucName];
-            _chiTheoMuc[muc] = items
-                .map((e) => ChiTieuItem.fromJson(e as Map<String, dynamic>))
-                .toList();
+      
+      // Load _lichSuThang
+      final lichSuThangJson = prefs.getString(_keyLichSuThang);
+      if (lichSuThangJson != null) {
+        try {
+          final Map<String, dynamic> decoded = jsonDecode(lichSuThangJson);
+          for (final monthKey in decoded.keys) {
+            final Map<String, dynamic> daysData = decoded[monthKey];
+            _lichSuThang[monthKey] = {};
+            for (final dayKey in daysData.keys) {
+              final List<dynamic> entries = daysData[dayKey];
+              _lichSuThang[monthKey]![dayKey] = entries.map((e) {
+                final mucName = e['muc'] as String;
+                final muc = ChiTieuMuc.values.firstWhere((m) => m.name == mucName);
+                final item = ChiTieuItem.fromJson(e['item'] as Map<String, dynamic>);
+                return HistoryEntry(muc: muc, item: item);
+              }).toList();
+            }
           }
-        }
-      } catch (_) {}
-    }
-    
-    // Load _lichSuThang
-    final lichSuThangJson = prefs.getString(_keyLichSuThang);
-    if (lichSuThangJson != null) {
-      try {
-        final Map<String, dynamic> decoded = jsonDecode(lichSuThangJson);
-        for (final monthKey in decoded.keys) {
-          final Map<String, dynamic> daysData = decoded[monthKey];
-          _lichSuThang[monthKey] = {};
-          for (final dayKey in daysData.keys) {
-            final List<dynamic> entries = daysData[dayKey];
-            _lichSuThang[monthKey]![dayKey] = entries.map((e) {
-              final mucName = e['muc'] as String;
-              final muc = ChiTieuMuc.values.firstWhere((m) => m.name == mucName);
-              final item = ChiTieuItem.fromJson(e['item'] as Map<String, dynamic>);
-              return HistoryEntry(muc: muc, item: item);
-            }).toList();
-          }
-        }
-      } catch (_) {}
+        } catch (_) {}
+      }
     }
     
     _invalidateCache();
@@ -774,26 +696,30 @@ class _ChiTieuAppState extends State<ChiTieuApp> {
   Future<void> _saveData() async {
     final prefs = _prefs ?? await SharedPreferences.getInstance();
     
-    // Save _chiTheoMuc (including soDu for income tracking)
-    final Map<String, dynamic> chiTheoMucData = {};
-    for (final muc in ChiTieuMuc.values) {
-      if (muc == ChiTieuMuc.lichSu || muc == ChiTieuMuc.caiDat) continue;
-      chiTheoMucData[muc.name] = _chiTheoMuc[muc]!.map((e) => e.toJson()).toList();
-    }
-    await prefs.setString(_keyChiTheoMuc, jsonEncode(chiTheoMucData));
-    
-    // Save _lichSuThang
-    final Map<String, dynamic> lichSuThangData = {};
-    for (final monthKey in _lichSuThang.keys) {
-      lichSuThangData[monthKey] = {};
-      for (final dayKey in _lichSuThang[monthKey]!.keys) {
-        lichSuThangData[monthKey][dayKey] = _lichSuThang[monthKey]![dayKey]!.map((e) => {
-          'muc': e.muc.name,
-          'item': e.item.toJson(),
-        }).toList();
+    // Cloud First: Only save transaction data to SharedPreferences for guest mode
+    // When logged in, Firestore handles all transaction data
+    if (!transactionService.isLoggedIn) {
+      // Save _chiTheoMuc (including soDu for income tracking)
+      final Map<String, dynamic> chiTheoMucData = {};
+      for (final muc in ChiTieuMuc.values) {
+        if (muc == ChiTieuMuc.lichSu || muc == ChiTieuMuc.caiDat) continue;
+        chiTheoMucData[muc.name] = _chiTheoMuc[muc]!.map((e) => e.toJson()).toList();
       }
+      await prefs.setString(_keyChiTheoMuc, jsonEncode(chiTheoMucData));
+      
+      // Save _lichSuThang
+      final Map<String, dynamic> lichSuThangData = {};
+      for (final monthKey in _lichSuThang.keys) {
+        lichSuThangData[monthKey] = {};
+        for (final dayKey in _lichSuThang[monthKey]!.keys) {
+          lichSuThangData[monthKey][dayKey] = _lichSuThang[monthKey]![dayKey]!.map((e) => {
+            'muc': e.muc.name,
+            'item': e.item.toJson(),
+          }).toList();
+        }
+      }
+      await prefs.setString(_keyLichSuThang, jsonEncode(lichSuThangData));
     }
-    await prefs.setString(_keyLichSuThang, jsonEncode(lichSuThangData));
     
     // Collect expenses aggregated by category for Tile (filter by current day)
     final Map<ChiTieuMuc, int> categoryTotals = {};
@@ -836,43 +762,44 @@ class _ChiTieuAppState extends State<ChiTieuApp> {
     await prefs.setString('tile_today_income_v2', todayIncome.toString());
     await prefs.setString('tile_data_date', dinhDangNgayDayDu(_currentDay));
     await prefs.setString('app_language', _appLanguage);
-    await prefs.setString('app_currency', _appCurrency);
-    await prefs.setDouble('exchange_rate', _exchangeRate);
     await prefs.setString('tile_top_expenses', jsonEncode(top2));
     
-    // Calculate and save monthly totals for Tile remaining balance
-    final currentMonthKey = getMonthKey(_currentDay);
+    // Calculate and save all-time totals for Tile remaining balance
     final todayDayKey = dinhDangNgayDayDu(_currentDay);
+    final currentMonthKey = getMonthKey(_currentDay);
     
-    // Start with today's values
-    int monthlyIncome = todayIncome;
-    int monthlyExpense = todayTotal;
+    // All-time income and expenses (for remaining balance)
+    int allTimeIncome = todayIncome;
+    int allTimeExpense = todayTotal;
     
-    // Add historical data from current month
-    final currentMonthData = _lichSuThang[currentMonthKey];
-    if (currentMonthData != null) {
-      for (final dayEntry in currentMonthData.entries) {
+    // Current month expenses only (for monthly spending display)
+    int currentMonthExpense = todayTotal;
+    
+    // Add ALL historical data from ALL months (excluding today)
+    for (final monthEntry in _lichSuThang.entries) {
+      final isCurrentMonth = monthEntry.key == currentMonthKey;
+      for (final dayEntry in monthEntry.value.entries) {
         if (dayEntry.key == todayDayKey) continue; // Skip today (already counted)
         for (final entry in dayEntry.value) {
           if (entry.muc == ChiTieuMuc.soDu) {
-            monthlyIncome += entry.item.soTien;
+            allTimeIncome += entry.item.soTien;
           } else {
-            monthlyExpense += entry.item.soTien;
+            allTimeExpense += entry.item.soTien;
+            // Add to current month expenses only if it's from current month
+            if (isCurrentMonth) {
+              currentMonthExpense += entry.item.soTien;
+            }
           }
         }
       }
     }
     
-    // Save monthly totals and remaining balance for Tile
-    final remainingBalance = monthlyIncome - monthlyExpense;
-    final remainingBalanceUsd = remainingBalance * _exchangeRate;
-    final monthlyExpenseUsd = monthlyExpense * _exchangeRate;
+    // Save all-time remaining balance for Tile
+    final remainingBalance = allTimeIncome - allTimeExpense;
     
-    await prefs.setString('tile_monthly_income', monthlyIncome.toString());
-    await prefs.setString('tile_monthly_expense', monthlyExpense.toString());
-    await prefs.setString('tile_monthly_expense_usd', monthlyExpenseUsd.toString());
+    await prefs.setString('tile_monthly_income', allTimeIncome.toString());
+    await prefs.setString('tile_monthly_expense', currentMonthExpense.toString());
     await prefs.setString('tile_remaining_balance', remainingBalance.toString());
-    await prefs.setString('tile_remaining_balance_usd', remainingBalanceUsd.toString());
     
     // Trigger complication update immediately
     try {
@@ -919,8 +846,6 @@ class _ChiTieuAppState extends State<ChiTieuApp> {
       'transactions': allData,
       'settings': {
         'language': _appLanguage,
-        'currency': _appCurrency,
-        'exchangeRate': _exchangeRate,
       },
     });
     
@@ -1071,6 +996,12 @@ class _ChiTieuAppState extends State<ChiTieuApp> {
           ),
         ),
       );
+      // Refresh main interface and sync Tile after returning from History
+      if (mounted) {
+        _invalidateCache();
+        setState(() {});
+        _saveData();
+      }
       return;
     }
 
@@ -1243,18 +1174,16 @@ class _ChiTieuAppState extends State<ChiTieuApp> {
                                     ),
                                   ),
                                 ),
-                                // Show remaining balance if user has any income in current month
+                                // Show remaining balance if user has any income (all time)
                                 if (() {
                                   // Check today's income
                                   int totalIncome = (_chiTheoMuc[ChiTieuMuc.soDu] ?? <ChiTieuItem>[])
                                       .where((item) => _sameDay(item.thoiGian, _currentDay))
                                       .fold(0, (sum, item) => sum + item.soTien);
                                   if (totalIncome > 0) return true;
-                                  // Check historical income in current month
-                                  final currentMonthKey = getMonthKey(_currentDay);
-                                  final currentMonthData = _lichSuThang[currentMonthKey];
-                                  if (currentMonthData != null) {
-                                    for (final dayEntry in currentMonthData.values) {
+                                  // Check ALL historical income (all months)
+                                  for (final monthData in _lichSuThang.values) {
+                                    for (final dayEntry in monthData.values) {
                                       for (final entry in dayEntry) {
                                         if (entry.muc == ChiTieuMuc.soDu) return true;
                                       }
@@ -1273,8 +1202,6 @@ class _ChiTieuAppState extends State<ChiTieuApp> {
                                           fit: BoxFit.scaleDown,
                                           child: Text(
                                             () {
-                                              // Current month key for filtering
-                                              final currentMonthKey = getMonthKey(_currentDay);
                                               final todayDayKey = dinhDangNgayDayDu(_currentDay);
                                               
                                               // Total income from today (stored in _chiTheoMuc)
@@ -1282,12 +1209,9 @@ class _ChiTieuAppState extends State<ChiTieuApp> {
                                                   .where((item) => _sameDay(item.thoiGian, _currentDay))
                                                   .fold(0, (sum, item) => sum + item.soTien);
                                               
-                                              // Add historical income from current month
-                                              final currentMonthData = _lichSuThang[currentMonthKey];
-                                              if (currentMonthData != null) {
-                                                // Since we filtered _chiTheoMuc to ONLY today, we can safely add all history
-                                                // excluding today (just in case history somehow has today, though unlikely)
-                                                for (final dayEntry in currentMonthData.entries) {
+                                              // Add ALL historical income (all months, excluding today)
+                                              for (final monthEntry in _lichSuThang.entries) {
+                                                for (final dayEntry in monthEntry.value.entries) {
                                                   if (dayEntry.key == todayDayKey) continue;
                                                   for (final entry in dayEntry.value) {
                                                     if (entry.muc == ChiTieuMuc.soDu) {
@@ -1307,9 +1231,9 @@ class _ChiTieuAppState extends State<ChiTieuApp> {
                                                     .where((item) => _sameDay(item.thoiGian, _currentDay))
                                                     .fold(0, (sum, item) => sum + item.soTien);
                                               }
-                                              // Add historical expenses from current month
-                                              if (currentMonthData != null) {
-                                                for (final dayEntry in currentMonthData.entries) {
+                                              // Add ALL historical expenses (all months, excluding today)
+                                              for (final monthEntry in _lichSuThang.entries) {
+                                                for (final dayEntry in monthEntry.value.entries) {
                                                   if (dayEntry.key == todayDayKey) continue;
                                                   for (final entry in dayEntry.value) {
                                                     if (entry.muc != ChiTieuMuc.soDu) {
@@ -1329,17 +1253,14 @@ class _ChiTieuAppState extends State<ChiTieuApp> {
                                             style: TextStyle(
                                               // Green if positive/zero, red if overspent
                                               color: () {
-                                                // Current month key for filtering
-                                                final currentMonthKey = getMonthKey(_currentDay);
                                                 final todayDayKey = dinhDangNgayDayDu(_currentDay);
                                                 
                                                 int totalIncome = (_chiTheoMuc[ChiTieuMuc.soDu] ?? <ChiTieuItem>[])
                                                     .where((item) => _sameDay(item.thoiGian, _currentDay))
                                                     .fold(0, (sum, item) => sum + item.soTien);
-                                                // Add historical income from current month only (excluding today)
-                                                final currentMonthData = _lichSuThang[currentMonthKey];
-                                                if (currentMonthData != null) {
-                                                  for (final dayEntry in currentMonthData.entries) {
+                                                // Add ALL historical income (all months, excluding today)
+                                                for (final monthEntry in _lichSuThang.entries) {
+                                                  for (final dayEntry in monthEntry.value.entries) {
                                                     if (dayEntry.key == todayDayKey) continue;
                                                     for (final e in dayEntry.value) {
                                                       if (e.muc == ChiTieuMuc.soDu) {
@@ -1357,9 +1278,9 @@ class _ChiTieuAppState extends State<ChiTieuApp> {
                                                       .where((item) => _sameDay(item.thoiGian, _currentDay))
                                                       .fold(0, (sum, item) => sum + item.soTien);
                                                 }
-                                                // Add historical expenses from current month only (excluding today)
-                                                if (currentMonthData != null) {
-                                                  for (final dayEntry in currentMonthData.entries) {
+                                                // Add ALL historical expenses (all months, excluding today)
+                                                for (final monthEntry in _lichSuThang.entries) {
+                                                  for (final dayEntry in monthEntry.value.entries) {
                                                     if (dayEntry.key == todayDayKey) continue;
                                                     for (final e in dayEntry.value) {
                                                       if (e.muc != ChiTieuMuc.soDu) {
@@ -1614,50 +1535,75 @@ class _SoDuScreenState extends State<SoDuScreen> {
   }
 
   Future<void> themThuNhap() async {
-    final soTien = await Navigator.push<int>(
+    final result = await Navigator.push<Map<String, dynamic>>(
       context,
-      MaterialPageRoute(builder: (_) => const NhapSoTienScreen()),
+      MaterialPageRoute(builder: (_) => const NhapSoDuScreen()),
     );
 
-    if (soTien != null && soTien > 0) {
-      final now = DateTime.now();
-      setState(() {
-        danhSachThuNhap.add(
-          ChiTieuItem(soTien: soTien, thoiGian: now),
-        );
-        widget.onDataChanged?.call(danhSachThuNhap);
-      });
+    if (result != null) {
+      final soTien = result['soTien'] as int;
+      final ten = result['ten'] as String?;
       
-      // Cloud First: Sync to Firestore
-      if (transactionService.isLoggedIn) {
-        transactionService.add(
-          muc: ChiTieuMuc.soDu.name,
-          soTien: soTien,
-          thoiGian: now,
-        );
+      if (soTien > 0) {
+        final now = DateTime.now();
+        setState(() {
+          danhSachThuNhap.add(
+            ChiTieuItem(soTien: soTien, thoiGian: now, tenChiTieu: ten),
+          );
+          widget.onDataChanged?.call(danhSachThuNhap);
+        });
+        
+        // Cloud First: Sync to Firestore
+        if (transactionService.isLoggedIn) {
+          transactionService.add(
+            muc: ChiTieuMuc.soDu.name,
+            soTien: soTien,
+            thoiGian: now,
+            ghiChu: ten,
+          );
+        }
       }
     }
   }
 
   Future<void> chinhSuaThuNhap(int index) async {
     if (dangChonXoa) return;
-    final soTienMoi = await Navigator.push<int>(
+    final item = danhSachThuNhap[index];
+    final result = await Navigator.push<Map<String, dynamic>>(
       context,
       MaterialPageRoute(
-        builder: (_) => NhapSoTienScreen(
-          soTienBanDau: danhSachThuNhap[index].soTien,
+        builder: (_) => NhapSoDuScreen(
+          tenBanDau: item.tenChiTieu,
+          soTienBanDau: item.soTien,
         ),
       ),
     );
 
-    if (soTienMoi != null && soTienMoi > 0) {
-      setState(() {
-        danhSachThuNhap[index] = danhSachThuNhap[index].copyWith(
-          soTien: soTienMoi,
-          thoiGian: DateTime.now(),
-        );
-        widget.onDataChanged?.call(danhSachThuNhap);
-      });
+    if (result != null) {
+      final soTienMoi = result['soTien'] as int;
+      final tenMoi = result['ten'] as String?;
+      
+      if (soTienMoi > 0) {
+        final now = DateTime.now();
+        setState(() {
+          danhSachThuNhap[index] = item.copyWith(
+            soTien: soTienMoi,
+            thoiGian: now,
+            tenChiTieu: tenMoi,
+          );
+          widget.onDataChanged?.call(danhSachThuNhap);
+        });
+        
+        // Cloud First: Update Firestore
+        if (transactionService.isLoggedIn && item.id != null) {
+          transactionService.update(
+            item.id!,
+            soTien: soTienMoi,
+            thoiGian: now,
+            ghiChu: tenMoi,
+          );
+        }
+      }
     }
   }
 
@@ -1870,40 +1816,56 @@ class _SoDuScreenState extends State<SoDuScreen> {
                                       ? Border.all(color: Colors.redAccent.withOpacity(0.5), width: 1)
                                       : null,
                                 ),
-                                child: Row(
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
                                   children: [
-                                    ConstrainedBox(
-                                      constraints: BoxConstraints(maxWidth: dateMaxWidth),
-                                      child: Text(
-                                        timeText,
-                                        style: const TextStyle(
-                                          color: Colors.white54,
-                                          fontSize: 11,
+                                    if (item.tenChiTieu != null && item.tenChiTieu!.isNotEmpty)
+                                      Padding(
+                                        padding: const EdgeInsets.only(bottom: 2),
+                                        child: Text(
+                                          item.tenChiTieu!,
+                                          style: const TextStyle(
+                                            color: Colors.white,
+                                            fontSize: 11,
+                                            fontWeight: FontWeight.w600,
+                                          ),
+                                          maxLines: 1,
+                                          overflow: TextOverflow.ellipsis,
                                         ),
                                       ),
-                                    ),
-                                    const SizedBox(width: 8),
-                                    Expanded(
-                                      child: Align(
-                                        alignment: Alignment.centerRight,
-                                        child: FittedBox(
-                                          fit: BoxFit.scaleDown,
-                                          child: Text(
-                                            moneyText,
-                                            style: const TextStyle(
-                                              color: Color(0xFF4CAF93),
-                                              fontSize: 13,
-                                              fontWeight: FontWeight.w600,
+                                    Row(
+                                      children: [
+                                        Text(
+                                          timeText,
+                                          style: const TextStyle(
+                                            color: Colors.white54,
+                                            fontSize: 10,
+                                          ),
+                                        ),
+                                        const SizedBox(width: 8),
+                                        Expanded(
+                                          child: Align(
+                                            alignment: Alignment.centerRight,
+                                            child: FittedBox(
+                                              fit: BoxFit.scaleDown,
+                                              child: Text(
+                                                moneyText,
+                                                style: const TextStyle(
+                                                  color: Color(0xFF4CAF93),
+                                                  fontSize: 12,
+                                                  fontWeight: FontWeight.w600,
+                                                ),
+                                              ),
                                             ),
                                           ),
                                         ),
-                                      ),
-                                    ),
-                                    const SizedBox(width: 6),
-                                    Icon(
-                                      dangChonXoa ? Icons.remove_circle_outline : Icons.edit,
-                                      color: dangChonXoa ? Colors.redAccent : Colors.white30,
-                                      size: 14,
+                                        const SizedBox(width: 6),
+                                        Icon(
+                                          dangChonXoa ? Icons.remove_circle_outline : Icons.edit,
+                                          color: dangChonXoa ? Colors.redAccent : Colors.white30,
+                                          size: 12,
+                                        ),
+                                      ],
                                     ),
                                   ],
                                 ),
@@ -2002,6 +1964,7 @@ class LichSuScreen extends StatefulWidget {
 }
 
 class _LichSuScreenState extends State<LichSuScreen> {
+  final Set<String> _expandedMonthKeys = {};
   final Set<String> _expandedDayKeys = {};
 
   bool _sameDay(DateTime a, DateTime b) =>
@@ -2116,66 +2079,90 @@ class _LichSuScreenState extends State<LichSuScreen> {
                               child: Column(
                                 crossAxisAlignment: CrossAxisAlignment.start,
                                 children: [
-                                  Container(
-                                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-                                    decoration: BoxDecoration(
-                                      color: Colors.white12,
-                                      borderRadius: const BorderRadius.vertical(top: Radius.circular(16)),
-                                    ),
-                                    child: Row(
-                                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                                      children: [
-                                        Flexible(
-                                          child: Text(
-                                            () {
-                                            final parts = monthKey.split('/');
-                                            final month = int.parse(parts[0]);
-                                            final year = parts[1];
-                                            if (_appLanguage == 'en') {
+                                  InkWell(
+                                    onTap: () {
+                                      setState(() {
+                                        if (_expandedMonthKeys.contains(monthKey)) {
+                                          _expandedMonthKeys.remove(monthKey);
+                                        } else {
+                                          _expandedMonthKeys.add(monthKey);
+                                        }
+                                      });
+                                    },
+                                    borderRadius: const BorderRadius.vertical(top: Radius.circular(16)),
+                                    child: Container(
+                                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                                      decoration: BoxDecoration(
+                                        color: Colors.white12,
+                                        borderRadius: _expandedMonthKeys.contains(monthKey)
+                                            ? const BorderRadius.vertical(top: Radius.circular(16))
+                                            : BorderRadius.circular(16),
+                                      ),
+                                      child: Row(
+                                        children: [
+                                          Icon(
+                                            _expandedMonthKeys.contains(monthKey)
+                                                ? Icons.keyboard_arrow_down_rounded
+                                                : Icons.keyboard_arrow_right_rounded,
+                                            color: Colors.white54,
+                                            size: 16,
+                                          ),
+                                          const SizedBox(width: 4),
+                                          Flexible(
+                                            child: Text(
+                                              () {
+                                              final parts = monthKey.split('/');
+                                              final month = int.parse(parts[0]);
+                                              final year = int.parse(parts[1]) % 100;
+                                              final dayCount = sortedDays.length;                                            
+                                              if (_appLanguage == 'vi') {
+                                                return 'Th.$month/$year';
+                                              }
                                               return '${getMonthName(month)} $year';
-                                            }
-                                            return 'Th.$monthKey';
-                                          }(),
-                                          style: const TextStyle(
-                                            color: Colors.white,
-                                            fontWeight: FontWeight.bold,
-                                            fontSize: 10,
+                                            }(),
+                                            style: const TextStyle(
+                                              color: Colors.white,
+                                              fontWeight: FontWeight.bold,
+                                              fontSize: 10,
+                                            ),
                                           ),
                                         ),
-                                      ),
-                                        Flexible(
-                                          child: Column(
-                                            crossAxisAlignment: CrossAxisAlignment.end,
-                                            children: [
-                                              FittedBox(
-                                                fit: BoxFit.scaleDown,
-                                                child: Text(
-                                                  formatAmountWithCurrency(totalMonth),
-                                                  style: const TextStyle(
-                                                    color: Color(0xFFF08080),
-                                                    fontWeight: FontWeight.bold,
-                                                    fontSize: 12,
-                                                  ),
-                                                ),
-                                              ),
-                                              if (hasAnyIncome)
+                                          const Spacer(),
+                                          Flexible(
+                                            child: Column(
+                                              crossAxisAlignment: CrossAxisAlignment.end,
+                                              children: [
                                                 FittedBox(
                                                   fit: BoxFit.scaleDown,
                                                   child: Text(
-                                                    formatAmountWithCurrency(incomeMonth),
+                                                    formatAmountWithCurrency(totalMonth),
                                                     style: const TextStyle(
-                                                      color: Color(0xFF4CAF93),
-                                                      fontWeight: FontWeight.w600,
-                                                      fontSize: 10,
+                                                      color: Color(0xFFF08080),
+                                                      fontWeight: FontWeight.bold,
+                                                      fontSize: 13,
                                                     ),
                                                   ),
                                                 ),
-                                            ],
+                                                if (hasAnyIncome)
+                                                  FittedBox(
+                                                    fit: BoxFit.scaleDown,
+                                                    child: Text(
+                                                      formatAmountWithCurrency(incomeMonth),
+                                                      style: const TextStyle(
+                                                        color: Color(0xFF4CAF93),
+                                                        fontWeight: FontWeight.w600,
+                                                        fontSize: 11,
+                                                      ),
+                                                    ),
+                                                  ),
+                                              ],
+                                            ),
                                           ),
-                                        ),
-                                      ],                                    
+                                        ],                                    
+                                      ),
                                     ),
                                   ),
+                                  if (_expandedMonthKeys.contains(monthKey))
                                   ListView.builder(
                                     shrinkWrap: true,
                                     physics: const NeverScrollableScrollPhysics(),
@@ -2333,14 +2320,15 @@ class _LichSuScreenState extends State<LichSuScreen> {
                                                         final timeText = dinhDangGio(entry.item.thoiGian);
                                                         final moneyText = formatAmountWithCurrency(entry.item.soTien);
                                                         final tenChiTieu = entry.item.tenChiTieu;
-                                                        final isKhac = entry.muc == ChiTieuMuc.khac && tenChiTieu != null;
+                                                        // Show name for: khac with name, or income (soDu) with name
+                                                        final hasName = tenChiTieu != null && tenChiTieu.isNotEmpty;
                                                         final isIncome = entry.muc == ChiTieuMuc.soDu;
                                                         // Income color is green, expenses are white
                                                         final amountColor = isIncome ? const Color(0xFF4CAF93) : Colors.white;
                                                         
                                                         return Padding(
                                                           padding: const EdgeInsets.symmetric(vertical: 2, horizontal: 12),
-                                                          child: isKhac
+                                                          child: hasName
                                                               ? Column(
                                                                   crossAxisAlignment: CrossAxisAlignment.start,
                                                                   children: [
@@ -2989,13 +2977,7 @@ class _NhapSoTienScreenState extends State<NhapSoTienScreen> {
 
     String initText = '';
     if (widget.soTienBanDau != null) {
-      if (_appCurrency == '\$') {
-        // Convert VND to USD for display
-        final usdAmount = widget.soTienBanDau! * _exchangeRate;
-        initText = usdAmount.toStringAsFixed(2);
-      } else {
-        initText = widget.soTienBanDau.toString();
-      }
+      initText = widget.soTienBanDau.toString();
     }
     controller = TextEditingController(text: initText);
 
@@ -3032,15 +3014,6 @@ class _NhapSoTienScreenState extends State<NhapSoTienScreen> {
     final text = controller.text.trim();
     if (text.isEmpty) return null;
     try {
-      if (_appCurrency == '\$') {
-        // USD mode: parse as double (allowing decimals) and convert to VND
-        final usdAmount = double.parse(text.replaceAll(',', '.'));
-        if (_exchangeRate > 0) {
-          // Convert USD back to VND for storage - no rounding
-          return (usdAmount / _exchangeRate).toInt();
-        }
-        return (usdAmount * 25000).toInt(); // Fallback rate
-      }
       // VND mode: parse as integer directly
       return int.parse(text);
     } catch (_) {
@@ -3078,12 +3051,8 @@ class _NhapSoTienScreenState extends State<NhapSoTienScreen> {
                     child: TextField(
                       focusNode: _focusNode,
                       controller: controller,
-                      keyboardType: _appCurrency == '\$' 
-                          ? const TextInputType.numberWithOptions(decimal: true)
-                          : TextInputType.number,
-                      inputFormatters: _appCurrency == '\$'
-                          ? [FilteringTextInputFormatter.allow(RegExp(r'[0-9.,]'))]
-                          : [FilteringTextInputFormatter.digitsOnly],
+                      keyboardType: TextInputType.number,
+                      inputFormatters: [FilteringTextInputFormatter.digitsOnly],
                       style: const TextStyle(
                         color: Color(0xFFF08080),
                         fontSize: 28,
@@ -3093,7 +3062,7 @@ class _NhapSoTienScreenState extends State<NhapSoTienScreen> {
                       decoration: InputDecoration(
                         hintText: '0',
                         hintStyle: const TextStyle(color: Colors.white24),
-                        suffixText: _appCurrency == '\$' ? '\$' : 'đ',
+                        suffixText: '₫',
                         suffixStyle: const TextStyle(
                           color: Color(0xFFF08080),
                           fontSize: 20,
@@ -3138,6 +3107,191 @@ class _NhapSoTienScreenState extends State<NhapSoTienScreen> {
       height: 48,
       decoration: BoxDecoration(color: color, shape: BoxShape.circle),
       child: Icon(icon, color: Colors.white, size: 24),
+    );
+  }
+}
+
+// =================== INPUT SỐ DƯ SCREEN (WITH NAME) ===================
+
+class NhapSoDuScreen extends StatefulWidget {
+  final String? tenBanDau;
+  final int? soTienBanDau;
+
+  const NhapSoDuScreen({super.key, this.tenBanDau, this.soTienBanDau});
+
+  @override
+  State<NhapSoDuScreen> createState() => _NhapSoDuScreenState();
+}
+
+class _NhapSoDuScreenState extends State<NhapSoDuScreen> {
+  late final TextEditingController _tenController;
+  late final TextEditingController _soTienController;
+  late final FocusNode _tenFocusNode;
+  late final FocusNode _soTienFocusNode;
+
+  @override
+  void initState() {
+    super.initState();
+    _tenFocusNode = FocusNode();
+    _soTienFocusNode = FocusNode();
+    
+    _tenController = TextEditingController(text: widget.tenBanDau ?? '');
+    
+    String initAmount = '';
+    if (widget.soTienBanDau != null) {
+      initAmount = widget.soTienBanDau.toString();
+    }
+    _soTienController = TextEditingController(text: initAmount);
+
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      _tenFocusNode.requestFocus();
+    });
+  }
+
+  @override
+  void dispose() {
+    _tenFocusNode.dispose();
+    _soTienFocusNode.dispose();
+    _tenController.dispose();
+    _soTienController.dispose();
+    super.dispose();
+  }
+
+  Map<String, dynamic>? _getResult() {
+    final text = _soTienController.text.trim();
+    if (text.isEmpty) return null;
+    
+    int? soTien;
+    try {
+      // VND mode: parse as integer directly
+      soTien = int.parse(text);
+    } catch (_) {
+      return null;
+    }
+    
+    if (soTien == null || soTien <= 0) return null;
+    
+    final ten = _tenController.text.trim();
+    return {'ten': ten.isEmpty ? null : ten, 'soTien': soTien};
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final isEdit = widget.soTienBanDau != null;
+
+    return Scaffold(
+      backgroundColor: Colors.black,
+      body: SafeArea(
+        child: Stack(
+          children: [
+            const _WatchBackground(),
+            SingleChildScrollView(
+              child: Center(
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    const SizedBox(height: 20),
+                    Text(
+                      isEdit 
+                          ? (_appLanguage == 'vi' ? 'Sửa thu nhập' : 'Edit income')
+                          : (_appLanguage == 'vi' ? 'Thêm thu nhập' : 'Add income'),
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 16,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                    // Name field
+                    Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 24),
+                      child: TextField(
+                        focusNode: _tenFocusNode,
+                        controller: _tenController,
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 14,
+                        ),
+                        textAlign: TextAlign.center,
+                        decoration: InputDecoration(
+                          hintText: _appLanguage == 'vi' ? 'Tên (tùy chọn)' : 'Name (optional)',
+                          hintStyle: const TextStyle(color: Colors.white38, fontSize: 12),
+                          enabledBorder: const UnderlineInputBorder(
+                            borderSide: BorderSide(color: Colors.white24),
+                          ),
+                          focusedBorder: const UnderlineInputBorder(
+                            borderSide: BorderSide(color: Color(0xFF4CAF93)),
+                          ),
+                        ),
+                        onSubmitted: (_) => _soTienFocusNode.requestFocus(),
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    // Amount field
+                    Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 24),
+                      child: TextField(
+                        focusNode: _soTienFocusNode,
+                        controller: _soTienController,
+                        keyboardType: TextInputType.number,
+                        inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+                        style: const TextStyle(
+                          color: Color(0xFF4CAF93),
+                          fontSize: 24,
+                          fontWeight: FontWeight.bold,
+                        ),
+                        textAlign: TextAlign.center,
+                        decoration: InputDecoration(
+                          hintText: '0',
+                          hintStyle: const TextStyle(color: Colors.white24),
+                          suffixText: '₫',
+                          suffixStyle: const TextStyle(
+                            color: Color(0xFF4CAF93),
+                            fontSize: 18,
+                            fontWeight: FontWeight.bold,
+                          ),
+                          enabledBorder: const UnderlineInputBorder(
+                            borderSide: BorderSide(color: Colors.white24),
+                          ),
+                          focusedBorder: const UnderlineInputBorder(
+                            borderSide: BorderSide(color: Color(0xFF4CAF93)),
+                          ),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 20),
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        GestureDetector(
+                          onTap: () => Navigator.pop(context),
+                          child: _circleBtn(Icons.close, const Color(0xFF555555)),
+                        ),
+                        const SizedBox(width: 32),
+                        GestureDetector(
+                          onTap: () => Navigator.pop(context, _getResult()),
+                          child: _circleBtn(Icons.check, const Color(0xFF4CAF93)),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 20),
+                  ],
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _circleBtn(IconData icon, Color color) {
+    return Container(
+      width: 44,
+      height: 44,
+      decoration: BoxDecoration(color: color, shape: BoxShape.circle),
+      child: Icon(icon, color: Colors.white, size: 22),
     );
   }
 }
@@ -3800,16 +3954,13 @@ class SettingsScreen extends StatefulWidget {
 
 class _SettingsScreenState extends State<SettingsScreen> {
   late String _selectedLanguage;
-  late String _selectedCurrency;
   bool _languageExpanded = false;
-  bool _currencyExpanded = false;
   String _appVersion = '';
 
   @override
   void initState() {
     super.initState();
     _selectedLanguage = _appLanguage;
-    _selectedCurrency = _appCurrency;
     _loadVersion();
   }
 
@@ -3834,40 +3985,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
     final prefs = _prefs ?? await SharedPreferences.getInstance();
     await prefs.setString(_keyLanguage, lang);
     widget.onLanguageChanged?.call();
-  }
-
-  Future<void> _setCurrency(String currency) async {
-    if (_selectedCurrency == currency) return;
-    
-    setState(() {
-      _selectedCurrency = currency;
-      _currencyExpanded = false;
-    });
-    
-    _appCurrency = currency;
-    final prefs = _prefs ?? await SharedPreferences.getInstance();
-    await prefs.setString(_keyCurrency, currency);
-    await prefs.setString('app_currency', currency); // Also save without prefix for Tile/Complication
-    await prefs.setDouble('exchange_rate', _exchangeRate);
-    
-    // Fetch exchange rate when switching to USD
-    if (currency == '\$') {
-      await fetchExchangeRate();
-      // Save new rate
-      await prefs.setDouble('exchange_rate', _exchangeRate);
-    }
-    
-    // First, refresh parent to update currency display AND save data
-    widget.onLanguageChanged?.call();
-    
-    // Small delay to ensure data is written before triggering update
-    await Future.delayed(const Duration(milliseconds: 100));
-    
-    // Then trigger complication update with fresh data
-    try {
-      const channel = MethodChannel('com.chiscung.quanlychitieu/complication');
-      await channel.invokeMethod('updateComplication');
-    } catch (_) {}
   }
 
   @override
@@ -4104,7 +4221,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   GestureDetector(
                     onTap: () => setState(() {
                       _languageExpanded = !_languageExpanded;
-                      if (_languageExpanded) _currencyExpanded = false;
                     }),
                     child: Container(
                       padding: const EdgeInsets.all(10),
@@ -4166,83 +4282,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
                                     'English',
                                     _selectedLanguage == 'en',
                                     () => _setLanguage('en'),
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ],
-                        ],
-                      ),
-                    ),
-                  ),
-                  const SizedBox(height: 8),
-                  
-                  // Currency Section - Click to expand
-                  GestureDetector(
-                    onTap: () => setState(() {
-                      _currencyExpanded = !_currencyExpanded;
-                      if (_currencyExpanded) _languageExpanded = false;
-                    }),
-                    child: Container(
-                      padding: const EdgeInsets.all(10),
-                      decoration: BoxDecoration(
-                        color: Colors.white10,
-                        borderRadius: BorderRadius.circular(12),
-                        border: _currencyExpanded 
-                            ? Border.all(color: const Color(0xFF4CAF93), width: 1)
-                            : null,
-                      ),
-                      child: Column(
-                        children: [
-                          Row(
-                            children: [
-                              const Icon(Icons.attach_money_rounded, color: Colors.white70, size: 16),
-                              const SizedBox(width: 8),
-                              Expanded(
-                                child: Text(
-                                  isVietnamese ? 'Tiền tệ' : 'Currency',
-                                  style: const TextStyle(
-                                    color: Colors.white,
-                                    fontSize: 12,
-                                    fontWeight: FontWeight.w600,
-                                  ),
-                                ),
-                              ),
-                              Text(
-                                _selectedCurrency == 'đ' ? '₫ VND' : '\$ USD',
-                                style: const TextStyle(
-                                  color: Color(0xFF4CAF93),
-                                  fontSize: 11,
-                                  fontWeight: FontWeight.w600,
-                                ),
-                              ),
-                              const SizedBox(width: 4),
-                              Icon(
-                                _currencyExpanded ? Icons.expand_less : Icons.expand_more,
-                                color: Colors.white54,
-                                size: 18,
-                              ),
-                            ],
-                          ),
-                          if (_currencyExpanded) ...[
-                            const SizedBox(height: 10),
-                            Row(
-                              children: [
-                                Expanded(
-                                  child: _optionButton(
-                                    '₫',
-                                    'VND',
-                                    _selectedCurrency == 'đ',
-                                    () => _setCurrency('đ'),
-                                  ),
-                                ),
-                                const SizedBox(width: 8),
-                                Expanded(
-                                  child: _optionButton(
-                                    '\$',
-                                    'USD',
-                                    _selectedCurrency == '\$',
-                                    () => _setCurrency('\$'),
                                   ),
                                 ),
                               ],
@@ -4344,7 +4383,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                           const SizedBox(width: 8),
                           Expanded(
                             child: Text(
-                              isVietnamese ? 'Thông tin' : 'Information',
+                              isVietnamese ? 'Phiên bản' : 'Version',
                               style: const TextStyle(
                                 color: Colors.white,
                                 fontSize: 12,

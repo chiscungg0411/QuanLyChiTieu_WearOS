@@ -48,7 +48,7 @@ class VFinanceComplicationService : SuspendingComplicationDataSourceService() {
         val isDataFromToday = savedDate == todayDate
         
         // Read currency and exchange rate settings
-        val currency = prefs.getString("flutter.app_currency", "đ") ?: "đ"
+        val currency = prefs.getString("flutter.app_currency", "₫") ?: "₫"
         val exchangeRate = try {
             prefs.getFloat("flutter.exchange_rate", 0.00004f).toDouble()
         } catch (e: Exception) {
@@ -99,7 +99,7 @@ class VFinanceComplicationService : SuspendingComplicationDataSourceService() {
                 
                 // Add currency prefix
                 val currencyPrefix = if (currency == "$") "$" else ""
-                val currencySuffix = if (currency == "đ" && formatted.suffix.isEmpty()) "đ" else ""
+                val currencySuffix = if (currency == "₫" && formatted.suffix.isEmpty()) "₫" else ""
                 
                 // For K suffix (< 1M): combine on same line like "350K" or "$1.245"
                 // For TR, T suffixes (>= 1M): two lines - number on top, suffix below
@@ -150,7 +150,7 @@ class VFinanceComplicationService : SuspendingComplicationDataSourceService() {
     }
 
     // Split format: returns number and suffix separately
-    private fun formatCompactSplit(value: Long, language: String = "vi", currency: String = "đ", usdAmount: Double = 0.0): FormattedAmount {
+    private fun formatCompactSplit(value: Long, language: String = "vi", currency: String = "₫", usdAmount: Double = 0.0): FormattedAmount {
         val isEn = language == "en" || currency == "$"
         val isUsd = currency == "$"
         
